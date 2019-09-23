@@ -50,8 +50,14 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/almk.h>
-
+#ifdef CONFIG_HUAWEI_KSTATE
+#include <linux/hw_kcollect.h>
+#endif
+#ifdef CONFIG_COMPACTION
+#include <linux/compaction.h>
+#endif
 #ifdef CONFIG_HIGHMEM
+
 #define _ZONE ZONE_HIGHMEM
 #else
 #define _ZONE ZONE_NORMAL
@@ -60,7 +66,12 @@
 #define CREATE_TRACE_POINTS
 #include "trace/lowmemorykiller.h"
 
+#ifdef CONFIG_HUAWEI_KERNEL_DEBUG
+extern ssize_t write_log_to_exception(const char* category, char level, const char* msg);
+static uint32_t lowmem_debug_level = 2;
+#else
 static uint32_t lowmem_debug_level = 1;
+#endif
 static short lowmem_adj[6] = {
 	0,
 	1,
@@ -235,7 +246,34 @@ int can_use_cma_pages(gfp_t gfp_mask)
 	}
 	return can_use;
 }
-
+static short aggressive_lmk_for_frag(struct shrink_control *sc, short adj)
+{
+#ifdef CONFIG_COMPACTION
+	enum zone_type high_zoneidx;
+	struct pglist_data *pgdat;
+	struct zone *z;
+	enum zone_type zoneidx;
+	if (current_is_kswapd())
+		return adj;
+	high_zoneidx = gfp_zone(sc->gfp_mask);
+	if (high_zoneidx > ZONE_NORMAL)
+		return adj;
+	/* Is there any zone under fragmentation for THREAD_SIZE_ORDER */
+	for_each_online_pgdat(pgdat) {
+		for (zoneidx = 0; zoneidx <= high_zoneidx; zoneidx++) {
+			z = pgdat->node_zones + zoneidx;
+			if (fragmentation_index(z, THREAD_SIZE_ORDER) > sysctl_extfrag_threshold)
+                        {
+                                if(adj < 2) 
+                                   return adj;
+                                else
+				   return 2;
+                        }
+		}
+	}
+#endif
+	return adj;
+}
 void tune_lmk_zone_param(struct zonelist *zonelist, int classzone_idx,
 					int *other_free, int *other_file,
 					int use_cma_pages)
@@ -395,7 +433,17 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 	int array_size = ARRAY_SIZE(lowmem_adj);
 	int other_free;
 	int other_file;
-
+#ifdef CONFIG_HUAWEI_KERNEL_DEBUG
+	/* judge if killing the process of the adj == 0
+	* 0: not kill the adj 0
+	* 1: kill the adj 0
+	*/
+	int kill_adj_0 = 0;
+#endif
+#ifdef CONFIG_SWAP
+	int to_be_aggressive = 0;
+	unsigned long swap_pages = 0;
+#endif
 	if (mutex_lock_interruptible(&scan_mutex) < 0)
 		return 0;
 
@@ -411,6 +459,15 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 
 	tune_lmk_param(&other_free, &other_file, sc);
 
+#ifdef CONFIG_SWAP
+	swap_pages = atomic_long_read(&nr_swap_pages);
+	/* More than 1/2 swap usage */
+	if (swap_pages * 2 < total_swap_pages)
+		to_be_aggressive++;
+	/* More than 3/4 swap usage */
+	if (swap_pages * 4 < total_swap_pages)
+		to_be_aggressive++;
+#endif
 	if (lowmem_adj_size < array_size)
 		array_size = lowmem_adj_size;
 	if (lowmem_minfree_size < array_size)
@@ -418,10 +475,19 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 	for (i = 0; i < array_size; i++) {
 		minfree = lowmem_minfree[i];
 		if (other_free < minfree && other_file < minfree) {
+#ifdef CONFIG_SWAP
+			if (to_be_aggressive != 0 && i > 3) {
+				i -= to_be_aggressive;
+				if (i < 3)
+					i = 3;
+			}
+#endif
 			min_score_adj = lowmem_adj[i];
 			break;
 		}
 	}
+	/* Check whether the system is under fragmentation */
+	min_score_adj = aggressive_lmk_for_frag(sc, min_score_adj);
 
 	ret = adjust_minadj(&min_score_adj);
 
@@ -520,15 +586,25 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 			     sc->gfp_mask);
 
 		if (lowmem_debug_level >= 2 && selected_oom_score_adj == 0) {
+#ifdef CONFIG_HUAWEI_KERNEL_DEBUG
+			kill_adj_0 = 1;
+#endif
 			show_mem(SHOW_MEM_FILTER_NODES);
 			dump_tasks(NULL, NULL);
 		}
 
 		lowmem_deathpending_timeout = jiffies + HZ;
 		set_tsk_thread_flag(selected, TIF_MEMDIE);
+#ifdef CONFIG_HUAWEI_KSTATE
+		hwkillinfo(selected->tgid, 0);  /*0 stand for low memory kill*/
+#endif
 		send_sig(SIGKILL, selected, 0);
 		rem += selected_tasksize;
 		rcu_read_unlock();
+#ifdef CONFIG_HUAWEI_KERNEL_DEBUG
+		if (1 == kill_adj_0)
+			write_log_to_exception("LMK-EXCEPTION", 'C', "lower memory killer exception");
+#endif
 		/* give the system time to free up the memory */
 		msleep_interruptible(20);
 		trace_almk_shrink(selected_tasksize, ret,

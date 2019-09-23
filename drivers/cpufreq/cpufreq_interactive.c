@@ -35,12 +35,17 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/cpufreq_interactive.h>
 
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+#include <linux/kernel_stat.h>
+#include <huawei_platform/power/msgnotify.h>
+#endif
 struct cpufreq_interactive_policyinfo {
 	struct timer_list policy_timer;
 	struct timer_list policy_slack_timer;
 	struct hrtimer notif_timer;
 	spinlock_t load_lock; /* protects load tracking stat */
 	u64 last_evaluated_jiffy;
+
 	struct cpufreq_policy *policy;
 	struct cpufreq_policy p_nolim; /* policy copy with no limits */
 	struct cpufreq_frequency_table *freq_table;
@@ -67,6 +72,9 @@ struct cpufreq_interactive_cpuinfo {
 	u64 cputime_speedadj;
 	u64 cputime_speedadj_timestamp;
 	unsigned int loadadjfreq;
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+	u64 cputime_msg_timestamp;
+#endif
 };
 
 static DEFINE_PER_CPU(struct cpufreq_interactive_policyinfo *, polinfo);
@@ -261,6 +269,9 @@ static void cpufreq_interactive_timer_start(
 					  tunables->io_is_busy);
 		pcpu->cputime_speedadj = 0;
 		pcpu->cputime_speedadj_timestamp = pcpu->time_in_idle_timestamp;
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+	pcpu->cputime_msg_timestamp = kcpustat_cpu(cpu).cpustat[CPUTIME_MESSAGE];
+#endif
 	}
 	spin_unlock_irqrestore(&ppol->load_lock, flags);
 }
@@ -422,6 +433,9 @@ static u64 update_load(int cpu)
 	unsigned int delta_idle;
 	unsigned int delta_time;
 	u64 active_time;
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+	u64 now_msg_timestamp;
+#endif
 
 	now_idle = get_cpu_idle_time(cpu, &now, tunables->io_is_busy);
 	delta_idle = (unsigned int)(now_idle - pcpu->time_in_idle);
@@ -432,6 +446,16 @@ static u64 update_load(int cpu)
 	else
 		active_time = delta_time - delta_idle;
 
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+	now_msg_timestamp = kcpustat_cpu(cpu).cpustat[CPUTIME_MESSAGE];
+
+	if (active_time != 0) {
+		active_time = adjust_active_time_by_msg(cpu,active_time,delta_time,
+			(now_msg_timestamp - pcpu->cputime_msg_timestamp));
+
+	}
+	pcpu->cputime_msg_timestamp = now_msg_timestamp;
+#endif
 	pcpu->cputime_speedadj += active_time * ppol->policy->cur;
 
 	pcpu->time_in_idle = now_idle;

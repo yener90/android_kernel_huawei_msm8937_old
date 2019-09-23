@@ -5649,8 +5649,21 @@ int mdss_mdp_ad_input(struct msm_fb_data_type *mfd,
 			}
 			mutex_unlock(&ad->lock);
 			mutex_lock(&mfd->bl_lock);
-			MDSS_BRIGHT_TO_BL(bl, bl, mfd->panel_info->bl_max,
-					mfd->panel_info->brightness_max);
+			//MDSS_BRIGHT_TO_BL(bl, bl, mfd->panel_info->bl_max,mfd->panel_info->brightness_max); //Original algorithm
+				if(bl > mfd->panel_info->bl_half)
+	   			{
+				MDSS_BRIGHT_TO_BL_HALF1(bl, bl, mfd->panel_info->bl_max,mfd->panel_info->bl_half,
+				mfd->panel_info->bl_target,mfd->panel_info->brightness_max);
+				//printk("MDSS_BRIGHT_TO_BL_HALF1 in mdss_fd_probe brightness=%d bl_leve=%d bl_max=%d bl_half=%d brightness_max=%d\n",
+				//bl, bl, mfd->panel_info->bl_max,mfd->panel_info->bl_half,mfd->panel_info->brightness_max);
+	   			}
+	  	 		else
+	   			{
+	   			MDSS_BRIGHT_TO_BL_HALF2(bl, bl, mfd->panel_info->bl_max,mfd->panel_info->bl_half,
+				mfd->panel_info->bl_target,mfd->panel_info->brightness_max);
+	   			//printk("MDSS_BRIGHT_TO_BL_HALF2 in mdss_fd_probe brightness=%d bl_leve=%d bl_max=%d bl_half=%d brightness_max=%d\n",
+				//bl, bl, mfd->panel_info->bl_max,mfd->panel_info->bl_half,mfd->panel_info->brightness_max);
+				}
 			mdss_fb_set_backlight(mfd, bl);
 			mutex_unlock(&mfd->bl_lock);
 			mutex_lock(&ad->lock);
@@ -7245,8 +7258,8 @@ static int pp_mfd_ad_release_all(struct msm_fb_data_type *mfd)
 	ad->mfd = NULL;
 	ad->bl_mfd = NULL;
 	ad->state = 0;
-	cancel_work_sync(&ad->calc_work);
 	mutex_unlock(&ad->lock);
+	cancel_work_sync(&ad->calc_work);
 
 	ctl = mfd_to_ctl(mfd);
 	if (ctl && ctl->ops.remove_vsync_handler)

@@ -10,6 +10,8 @@ config SND_SOC_I2C_AND_SPI
 
 menu "CODEC drivers"
 
+source "sound/soc/codecs/tfa98xx/Kconfig"
+
 config SND_SOC_ALL_CODECS
 	tristate "Build all ASoC CODEC drivers"
 	depends on COMPILE_TEST
@@ -439,6 +441,12 @@ config SND_SOC_MAX98090
 
 config SND_SOC_MAX98095
        tristate
+
+config SND_SOC_MAX98925
+	bool "Support MAX98925 smartpa system"
+	depends on I2C
+	help
+	MAX98925 driver for smartpa system.
 
 config SND_SOC_MAX9850
 	tristate

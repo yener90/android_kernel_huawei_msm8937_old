@@ -173,6 +173,16 @@ extern struct task_group root_task_group;
 # define INIT_KASAN(tsk)
 #endif
 
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+#define INIT_MSG_POLICY(tsk)	\
+	.ms = {						\
+		.main_looper_thread = false,\
+		.sched_time = 0,		\
+	},
+#else
+#define INIT_MSG_POLICY(tsk)
+#endif
+
 /*
  *  INIT_TASK is used to set up the first task table, touch at
  * your own risk!. Base=0, limit=0x1fffff (=2MB)

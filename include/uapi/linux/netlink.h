@@ -27,7 +27,18 @@
 #define NETLINK_RDMA		20
 #define NETLINK_CRYPTO		21	/* Crypto layer */
 #define NETLINK_SOCKEV		22	/* Socket Administrative Events */
+#ifdef CONFIG_HW_WIFIPRO
+#define NETLINK_WIFIPRO_EVENT_NL  24
+#endif
+#ifdef CONFIG_HW_WIFI
+#define NETLINK_WIFI_EVENT_NL 25
+#endif
+
 #define NETLINK_INET_DIAG	NETLINK_SOCK_DIAG
+
+#ifdef CONFIG_HUAWEI_KSTATE
+#define NETLINK_HW_KSTATE	30	/* kstate send event to user */
+#endif
 
 #define MAX_LINKS 32		
 

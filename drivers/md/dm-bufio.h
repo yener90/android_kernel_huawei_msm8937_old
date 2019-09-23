@@ -47,7 +47,8 @@ void dm_bufio_client_destroy(struct dm_bufio_client *c);
  */
 void *dm_bufio_read(struct dm_bufio_client *c, sector_t block,
 		    struct dm_buffer **bp);
-
+void *dm_bufio_readback(struct dm_bufio_client *c, sector_t block,
+		    struct dm_buffer **bp);
 /*
  * Like dm_bufio_read, but return buffer from cache, don't read
  * it. If the buffer is not in the cache, return NULL.

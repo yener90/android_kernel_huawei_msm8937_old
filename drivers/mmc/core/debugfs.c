@@ -19,6 +19,8 @@
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
+#include <linux/mmc/mmc.h>
+#include <linux/scatterlist.h>
 
 #include "core.h"
 #include "mmc_ops.h"
@@ -30,6 +32,304 @@ static char *fail_request;
 module_param(fail_request, charp, 0);
 
 #endif /* CONFIG_FAIL_MMC_REQUEST */
+
+/*Samsung osv:  eMMC internal data check*/
+static int samsung_emmc_health_info(struct mmc_card *card);
+static int samsung_osv_enable_vendor(struct mmc_card *card);
+static int samsung_osv_write_vendor(struct mmc_card *card);
+static int samsung_osv_read_vendor(struct mmc_card *card);
+
+extern int mmc_blk_cmdq_switch(struct mmc_card *card,
+                                struct mmc_blk_data *md, bool enable);
+
+struct VUC_REQUEST
+{
+    u32 signature;		/* = 0x1598a125 */
+    u32 reserved0;		/* = 0 */
+    u16 major_revision;	/* = 0 */
+    u16 minor_revision;	/* = 0 */
+    u32 reserved1;		/* = 0 */
+    u32 UID;			/* = 0x00020003 */
+    u32 reserved2[3];	/* = 0 */
+    u32 argument[4];	/* = 0 */
+    u32 reserved3[116];	/* = 0 */
+};
+
+struct OSV_DATA
+{
+    u32 reserved1[1];
+    u32 reserved2[1];
+    u32 UNC_err; 			/* - 0 : Pass.(No UECC) 	- 1 : Fail. (UECC happened) */
+    u32 meta_data_corr; 	/* - 0 : Pass. (Meta data is normal) 	- 1 : Fail.(Meta data corrupted) */
+    u32 num_run_time_bad; 	/* RTBB count */
+    u32 total_written_amnt; /* Host requested written data size (100MB unit) */
+    u32 LVD_detect_cnt; 	/* Total LVDF count */
+    u32 reserved3[121];
+};
+
+struct VUC_REQUEST emmc_VUC_REQUEST = {0};
+struct OSV_DATA emmc_OSV_DATA;
+
+#define OSV_ARG							0xD7EF0326
+#define CARD_BLOCK_SIZE 				512
+#define BIT_DEVICE_SELF_TEST 			(0x1<<2)
+#define BYTE_DEVICE_SELF_TEST_ENABLE 	0x2
+#define SET_BLOCKCOUNT_READ 			0
+#define SET_BLOCKCOUNT_WRITE 			1
+
+static int samsung_emmc_health_info(struct mmc_card *card)
+{
+	int err = 0;
+	bool cmdq_switch = false;
+
+	if (!card) {
+		err = -EINVAL;
+		pr_err("OSV: %s: argument error card is NULL\n", __func__);
+		goto out;
+	}
+
+	if (mmc_card_cmdq(card)) {
+		/*cmdq switch off*/
+		pr_err("OSV: mmc_blk_cmdq_switch off.\n");
+		err = mmc_blk_cmdq_switch(card, NULL, false);
+		if (err) {
+			pr_err("%s: %s: cmdq disable failed %d.\n", mmc_hostname(card->host), __func__, err);
+			goto out;
+		}
+		cmdq_switch = true;
+	}
+
+	/*check osv is enable*/
+	err = samsung_osv_enable_vendor(card);
+	if (err) {
+		pr_err("OSV: %s: samsung_osv_enable_vendor fail,err=%d\n",
+			mmc_hostname(card->host), err);
+		goto out;
+	}
+
+	err = samsung_osv_write_vendor(card);
+	if (err) {
+		pr_err("OSV: %s: samsung_osv_write_vendor fail,err=%d\n",
+			mmc_hostname(card->host), err);
+		goto out;
+	}
+
+	/* After the test, send the OSV command and check the value */
+	err = samsung_osv_read_vendor(card);
+	if (err) {
+		pr_err("OSV: %s: samsung_osv_read_vendor,err=%d\n",
+			mmc_hostname(card->host), err);
+		goto out;
+	}
+
+	if (!err && cmdq_switch) {
+		/*cmdq switch on*/
+		pr_err("OSV: mmc_blk_cmdq_switch on.\n");
+		err = mmc_blk_cmdq_switch(card, NULL, true);
+		if (err) {
+			pr_err("%s: %s: cmdq enable failed %d.\n", mmc_hostname(card->host), __func__, err);
+			goto out;
+		}
+	}
+
+out:
+	return err;
+}
+
+/*OSV Support & Enable bit (check pervious slide) */
+static int samsung_osv_enable_vendor(struct mmc_card *card)
+{
+	u8 ext_csd[CARD_BLOCK_SIZE] = {0};
+	int err = 0;
+
+	if (!card) {
+		err = -EINVAL;
+		pr_err("OSV: %s: argument error card is NULL\n", __func__);
+		goto out;
+	}
+
+	/* Read the EXT_CSD */
+	err = mmc_send_ext_csd(card, ext_csd);
+	if (err) {
+		pr_err("OSV: %s: error %d sending ext_csd\n",
+			mmc_hostname(card->host), err);
+		goto out;
+	}
+
+	/*send the OSV command and check the value*/
+	/* Check if OSV is supported by card */
+	if (!(ext_csd[EXT_CSD_VENDOR_EXT_FEATURES]&BIT_DEVICE_SELF_TEST)) {
+		err = -EINVAL;
+		pr_err("OSV: %s: error %d OSV is not supported, ext_csd[EXT_CSD_VENDOR_EXT_FEATURES] = %02x\n",
+			mmc_hostname(card->host), err, ext_csd[EXT_CSD_VENDOR_EXT_FEATURES]);
+		goto out;
+	}
+
+	/*Device Self Test(OSV) Enable: CMD6 + 0x03660200*/
+	err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+		EXT_CSD_VENDOR_EXT_FEATURES_ENABLE, BYTE_DEVICE_SELF_TEST_ENABLE,
+		card->ext_csd.generic_cmd6_time);
+	if (err) {
+		pr_err("OSV: %s: Device Self Test(OSV) enable fail,err=%d\n",
+			mmc_hostname(card->host), err);
+		return err;
+	}
+
+	/* Read the EXT_CSD */
+	err = mmc_send_ext_csd(card, ext_csd);
+	if (err) {
+		pr_err("OSV: %s: error %d sending ext_csd\n",
+			mmc_hostname(card->host), err);
+		goto out;
+	}
+
+	/* Check if OSV is supported by card */
+	if (ext_csd[EXT_CSD_VENDOR_EXT_FEATURES_ENABLE] != BYTE_DEVICE_SELF_TEST_ENABLE) {
+		err = -EINVAL;
+		pr_err("OSV: Device Self Test(OSV) is not enable, ext_csd[EXT_CSD_VENDOR_EXT_FEATURES_ENABLE] = 0x%02x\n",
+			ext_csd[EXT_CSD_VENDOR_EXT_FEATURES_ENABLE]);
+		goto out;
+	}
+
+out:
+	return err;
+}
+
+/* Write an eMMC internal data check format with CMD25 arg (0xD7EF0326) */
+static int samsung_osv_write_vendor(struct mmc_card *card)
+{
+	struct mmc_request mrq = {NULL};
+	struct mmc_command cmd = {0};
+	struct mmc_data data = {0};
+	struct scatterlist sg = {0};
+	void *data_buf = NULL;
+	int len = 512;
+	int err = 0;
+
+	if (!card) {
+		err = -EINVAL;
+		pr_err("OSV: %s: argument error card is NULL\n", __func__);
+		goto out;
+	}
+
+	data_buf = kzalloc(len, GFP_KERNEL);
+	if(!data_buf) {
+		pr_err("Malloc err at %d.\n", __LINE__);
+		return -ENOMEM;
+	}
+
+	emmc_VUC_REQUEST.signature = 0x1598a125;
+	emmc_VUC_REQUEST.UID = 0x00020003;
+	memcpy(data_buf, &emmc_VUC_REQUEST, len);
+
+	cmd.opcode = MMC_WRITE_MULTIPLE_BLOCK;
+	cmd.arg = OSV_ARG;
+	cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
+
+	data.blksz = len;
+	data.blocks = 1;
+	data.flags = MMC_DATA_WRITE;
+	data.sg = &sg;
+	data.sg_len = 1;
+
+	sg_init_one(&sg, data_buf, len);
+	mmc_set_data_timeout(&data, card);
+
+	mrq.cmd = &cmd;
+	mrq.data = &data;
+
+	err = mmc_set_blockcount(card, data.blocks, SET_BLOCKCOUNT_WRITE);
+	if (err) {
+		pr_err("OSV: %s:line%d-%s(), mmc_set_blockcount fail\n", __FILE__, __LINE__, __func__);
+		goto out;
+	}
+
+	mmc_wait_for_req(card->host, &mrq);
+
+	if(cmd.error) {
+		err = 1;
+		pr_err("cmd.error=%d\n", cmd.error);
+		goto out;
+	}
+
+	if(data.error) {
+		err = 1;
+		pr_err("data.error=%d\n", data.error);
+		goto out;
+	}
+
+out:
+	if(data_buf)
+		kfree(data_buf);
+	return err;
+}
+
+/* Read an eMMC internal data with CMD18 arg (0xD7EF0326) */
+static int samsung_osv_read_vendor(struct mmc_card *card)
+{
+	struct mmc_request mrq = {NULL};
+	struct mmc_command cmd = {0};
+	struct mmc_data data = {0};
+	struct scatterlist sg = {0};
+	void *data_buf = NULL;
+	int len = 512;
+	int err = 0;
+
+	if (!card) {
+		err = -EINVAL;
+		pr_err("OSV: %s: argument error card is NULL\n", __func__);
+		goto out;
+	}
+
+	data_buf = kzalloc(len, GFP_KERNEL);
+	if(!data_buf) {
+		pr_err("Malloc err at %d.\n", __LINE__);
+		return -ENOMEM;
+	}
+
+	cmd.opcode = MMC_READ_MULTIPLE_BLOCK;
+	cmd.arg = OSV_ARG;
+	cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
+
+	data.blksz = len;
+	data.blocks = 1;
+	data.flags = MMC_DATA_READ;
+	data.sg = &sg;
+	data.sg_len = 1;
+
+	sg_init_one(&sg, data_buf, len);
+	mmc_set_data_timeout(&data, card);
+
+	mrq.cmd = &cmd;
+	mrq.data = &data;
+
+	err = mmc_set_blockcount(card, data.blocks, SET_BLOCKCOUNT_READ);
+	if (err) {
+		pr_err("OSV: %s:line%d-%s(), mmc_set_blockcount fail\n", __FILE__, __LINE__, __func__);
+		goto out;
+	}
+
+	mmc_wait_for_req(card->host, &mrq);
+
+	if(cmd.error) {
+		err = 1;
+		pr_err("cmd.error=%d\n", cmd.error);
+		goto out;
+	}
+
+	if(data.error) {
+		err = 1;
+		pr_err("data.error=%d\n", data.error);
+		goto out;
+	}
+
+	memcpy(&emmc_OSV_DATA, data_buf, len);
+
+out:
+	if(data_buf)
+		kfree(data_buf);
+	return err;
+}
 
 /* The debugfs functions are optimized away when CONFIG_DEBUG_FS isn't set. */
 static int mmc_ios_show(struct seq_file *s, void *data)
@@ -765,6 +1065,141 @@ static const struct file_operations mmc_dbg_bkops_stats_fops = {
 	.write		= mmc_bkops_stats_write,
 };
 
+#ifdef CONFIG_HW_MMC_TEST
+static int mmc_card_addr_open(struct inode *inode, struct file *filp)
+{
+	struct mmc_card *card = inode->i_private;
+	filp->private_data = card;
+
+	return 0;
+}
+
+static ssize_t mmc_card_addr_read(struct file *filp, char __user *ubuf,
+				     size_t cnt, loff_t *ppos)
+{
+	char buf[64] = {0};
+	struct mmc_card *card = filp->private_data;
+	long card_addr = (long)card;
+
+	card_addr = (long)(card_addr ^ CARD_ADDR_MAGIC);
+	snprintf(buf, sizeof(buf), "%ld", card_addr);
+
+	return simple_read_from_buffer(ubuf, cnt, ppos,
+			buf, sizeof(buf));
+}
+
+static const struct file_operations mmc_dbg_card_addr_fops = {
+	.open		= mmc_card_addr_open,
+	.read		= mmc_card_addr_read,
+	.llseek     = default_llseek,
+};
+
+static int mmc_test_st_open(struct inode *inode, struct file *filp)
+{
+	struct mmc_card *card = inode->i_private;
+
+	filp->private_data = card;
+
+	return 0;
+}
+
+static ssize_t mmc_test_st_read(struct file *filp, char __user *ubuf,
+				     size_t cnt, loff_t *ppos)
+{
+	char buf[64] = {0};
+	struct mmc_card *card = filp->private_data;
+
+	if (!card)
+		return cnt;
+
+	snprintf(buf, sizeof(buf), "%d", card->host->test_status);
+
+	return simple_read_from_buffer(ubuf, cnt, ppos,
+			buf, sizeof(buf));
+
+}
+
+static ssize_t mmc_test_st_write(struct file *filp,
+				      const char __user *ubuf, size_t cnt,
+				      loff_t *ppos)
+{
+	struct mmc_card *card = filp->private_data;
+	int value;
+
+	if (!card) {
+		return cnt;
+	}
+
+	sscanf(ubuf, "%d", &value);
+	card->host->test_status = value;
+
+	return cnt;
+}
+
+static const struct file_operations mmc_dbg_test_st_fops = {
+	.open		= mmc_test_st_open,
+	.read		= mmc_test_st_read,
+	.write		= mmc_test_st_write,
+};
+
+/* Print samsung emmc health information */
+static int samsung_emmc_health_info_show(struct seq_file *file, void *data)
+{
+	int err = 0;
+	struct mmc_card *card = file->private;
+
+	if (!card)
+		return -EINVAL;
+
+	err = samsung_emmc_health_info(card);
+	if(!err)
+	{
+		seq_printf(file, "Samsung Device Health Information\n");
+		seq_printf(file, "Uncorrectable ECC: 0x%x\n", emmc_OSV_DATA.UNC_err);
+		seq_printf(file, "Meta Data Corruption: 0x%x\n", emmc_OSV_DATA.meta_data_corr);
+		seq_printf(file, "Runtime Bad Block: 0x%x\n", emmc_OSV_DATA.num_run_time_bad);
+		seq_printf(file, "Written Date: 0x%x\n", emmc_OSV_DATA.total_written_amnt);
+		seq_printf(file, "LVDF: 0x%x\n", emmc_OSV_DATA.LVD_detect_cnt);
+	}
+	else
+		seq_printf(file, "It has not the health information!\n");
+
+	return err;
+}
+
+/* Read emmc health information according to the vendor */
+static int mmc_health_st_read(struct seq_file *file, void *data)
+{
+	struct mmc_card *card = file->private;
+	if (!card)
+		return -EINVAL;
+
+	switch(card->cid.manfid) {
+		case CID_MANFID_SAMSUNG:
+			samsung_emmc_health_info_show(file, data);
+		break;
+
+		default:
+			seq_printf(file, "It has not the health information!\n");
+		break;
+	}
+
+	return 0;
+}
+
+static int mmc_health_st_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mmc_health_st_read, inode->i_private);
+}
+
+static const struct file_operations mmc_dbg_health_st_fops = {
+	.open		= mmc_health_st_open,
+	.read		= seq_read,
+    .llseek     = default_llseek,
+};
+
+#endif
+
 void mmc_add_card_debugfs(struct mmc_card *card)
 {
 	struct mmc_host	*host = card->host;
@@ -809,7 +1244,23 @@ void mmc_add_card_debugfs(struct mmc_card *card)
 		if (!debugfs_create_file("bkops_stats", S_IRUSR, root, card,
 					 &mmc_dbg_bkops_stats_fops))
 			goto err;
+#ifdef CONFIG_HW_MMC_TEST
+	if (mmc_card_mmc(card))
+		if (!debugfs_create_file("card_addr", S_IRUSR, root, card,
+				&mmc_dbg_card_addr_fops))
+			goto err;
 
+	if (mmc_card_mmc(card))
+		if (!debugfs_create_file("test_st", S_IRUSR, root, card,
+				&mmc_dbg_test_st_fops))
+			goto err;
+
+	/*add file health_st*/
+	if(mmc_card_mmc(card))
+		if (!debugfs_create_file("health_st", S_IRUSR, root, card,
+				&mmc_dbg_health_st_fops))
+			goto err;
+#endif
 	return;
 
 err:

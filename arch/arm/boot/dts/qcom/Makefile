@@ -1,3 +1,4 @@
+ifneq ($(CONFIG_ARCH_MSM8940),y)
 dtb-$(CONFIG_ARCH_MSM8996) += msm8996-v2-pmi8994-cdp.dtb \
 	msm8996-v2-pmi8994-mtp.dtb \
 	msm8996-v2-pmi8994-pmk8001-cdp.dtb \
@@ -127,7 +128,8 @@ dtb-$(CONFIG_ARCH_MSM8937) += msm8937-rumi.dtb \
 	apq8037-pmi8950-cdp.dtb \
 	apq8037-pmi8937-cdp.dtb \
 	apq8037-pmi8950-mtp.dtb \
-	apq8037-pmi8937-mtp.dtb
+	apq8037-pmi8937-mtp.dtb \
+	msm8937-pmi8950-qrd-wt87511.dtb
 
 dtb-$(CONFIG_ARCH_MSM8917) += msm8917-rumi.dtb \
 	apq8017-pmi8937-cdp.dtb \
@@ -154,20 +156,34 @@ dtb-$(CONFIG_ARCH_MSM8940) += msm8940-pmi8937-cdp.dtb \
 	msm8940-pmi8950-ext-codec-cdp.dtb \
 	msm8940-pmi8940-mtp.dtb \
 	msm8940-pmi8940-cdp.dtb \
-	msm8940-pmi8940-rcm.dtb
-
-dtb-$(CONFIG_ARCH_MSM8953) += msm8953-sim.dtb \
-	msm8953-rumi.dtb \
-	msm8953-cdp.dtb \
-	msm8953-mtp.dtb \
-	msm8953-ext-codec-mtp.dtb \
-	msm8953-qrd-sku3.dtb \
-	msm8953-rcm.dtb \
-	msm8953-ext-codec-rcm.dtb \
-	apq8053-cdp.dtb \
-	apq8053-mtp.dtb \
-	apq8053-ext-audio-mtp.dtb \
-	msm8953-cdp-1200p.dtb
+	msm8940-pmi8940-rcm.dtb \
+	msm8940-pmi8950-qrd-wt87511.dtb
+	
+dtb-$(CONFIG_ARCH_MSM8953) += msm8953-mtp.dtb \
+	huawei-mla-al00-va.dtb \
+	huawei-mla-al00-vb.dtb \
+	huawei-mla-al00-vc.dtb \
+	huawei-mla-al00-vd.dtb \
+	huawei-mla-tl00-va.dtb \
+	huawei-mla-l01-va.dtb \
+	huawei-mla-l01-vb.dtb \
+	huawei-mla-l02-va.dtb \
+	huawei-mla-l03-va.dtb \
+	huawei-can-al00-va.dtb \
+	huawei-can-al00-vb.dtb \
+	huawei-can-al00-vc.dtb \
+	huawei-can-cl00-va.dtb \
+	huawei-can-tl00-va.dtb \
+	huawei-can-l01-va.dtb \
+	huawei-can-l01-vb.dtb \
+	huawei-can-l01-vc.dtb \
+	huawei-can-l01-vd.dtb \
+	huawei-can-l02-va.dtb \
+	huawei-can-l02-vb.dtb \
+	huawei-can-l02-vc.dtb \
+	huawei-can-l03-va.dtb \
+	huawei-can-l03-vb.dtb \
+	huawei-can-l03-vc.dtb
 
 dtb-$(CONFIG_ARCH_MDM9607) += mdm9607-rumi.dtb \
 	mdm9607-cdp.dtb \
@@ -187,7 +203,15 @@ dtb-$(CONFIG_ARCH_MSM8909) += msm8909-pm8916-mtp.dtb \
 	msm8909w-pm8916-mtp-ext-chg-fg.dtb \
 	msm8909-pm8916-cdp.dtb \
 	msm8909w-cdp.dtb
-
+else
+dtb-y += huawei-dig-al00-va.dtb \
+         huawei-dig-tl10-va.dtb \
+		 huawei-dig-l21-va.dtb \
+		 huawei-dig-l21hn-va.dtb \
+		 huawei-dig-l22-va.dtb \
+		 huawei-dig-l22hn-va.dtb \
+		 huawei-dig-l23-va.dtb
+endif
 
 ifeq ($(CONFIG_ARM64),y)
 always          := $(dtb-y)

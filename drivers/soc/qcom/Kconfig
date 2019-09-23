@@ -794,6 +794,24 @@ config MSM_REMOTEQDSS
 	  enable/disable these events. Interface located in
 	  /sys/class/remoteqdss.
 
+config HUAWEI_MODEM_CRASH_LOG
+	bool "huawei modem crash log"
+	default n
+	help
+	huawei modem crash log control
+
+config SERIAL_NUM
+	bool "Enable Serial Number Proc Interface"
+	  help
+	  Provide a interface for reading CPU serial number
+
+
+config SECBOOT_FUSE
+	bool "Enable Secure boot fuse Proc Interface"
+	help
+	  Provide a interface for reading CPU secure boot fuse setting. Interface located in
+	  /proc/secboot_fuse_reg
+
 source "drivers/soc/qcom/memshare/Kconfig"
 
 endif # ARCH_MSM

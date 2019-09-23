@@ -29,6 +29,11 @@ struct msm_eeprom_ctrl_t;
 
 #define PROPERTY_MAXSIZE 32
 
+struct msm_eeprom_get_vendor_t{
+    uint32_t vendor_offset;
+    uint8_t vendor_id;
+};
+
 struct msm_eeprom_ctrl_t {
 	struct platform_device *pdev;
 	struct mutex *eeprom_mutex;
@@ -46,6 +51,7 @@ struct msm_eeprom_ctrl_t {
 	int32_t userspace_probe;
 	struct msm_eeprom_memory_block_t cal_data;
 	uint8_t is_supported;
+	int32_t (*msm_eeprom_get_vendor_id)(struct msm_eeprom_ctrl_t *, struct msm_eeprom_get_vendor_t *);
 };
 
 #endif

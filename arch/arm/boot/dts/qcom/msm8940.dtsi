@@ -226,8 +226,15 @@
 	/delete-property/ qcom,cpr-quotient-adjustment;
 	/delete-property/ qcom,cpr-init-voltage-adjustment;
 	/delete-property/ qcom,cpr-enable;
+        
+        qcom,mem-acc-corner-map = <1 2 2 2 2 2 2>;
 
 	qcom,pvs-version-fuse-sel = <37 40 3 0>; /* foundry */
+	qcom,cpr-speed-bin-max-corners =
+				<0 (-1) 1 2 6>,
+				<1 (-1) 1 2 7>;
+
+
 	qcom,cpr-fuse-version-map =
 		<(-1)   0  (-1) (-1) (-1) (-1)>,
 		<(-1)   1  (-1) (-1) (-1) (-1)>,
@@ -242,8 +249,38 @@
 		<0    0    0>,
 		<38   0   28>, /* SVSP(20mv); TURBO(15mv); KV(1.9) */
 		<0    0   19>; /* TURBO(10mv); KV(1.9) */
-
 	qcom,cpr-enable;
+
+	/* fuse range based adjustments */
+	qcom,cpr-fuse-range-list =
+		<37 40 3 0>, /* foundry id */
+		<36 30 8 0>, /* iddq apc on */
+		<67  0 6 0>, /* turbo targ volt */
+		<67 18 6 0>; /* nom targ volt */
+
+	qcom,cpr-fuse-range-map =
+		<0 0>, < 0   0>, < 0 63>, < 0 40>,
+		<0 0>, < 0   0>, < 0 47>, < 0 63>,
+		<0 0>, < 1  74>, < 0 63>, < 0 63>,
+		<1 1>, < 0   0>, < 0 63>, < 0 41>,
+		<1 1>, < 0   0>, < 0 44>, < 0 63>,
+		<1 1>, < 1  67>, < 0 63>, < 0 63>;
+
+	qcom,cpr-fuse-range-corner-voltage-adjustment =
+		<50000 50000 50000 50000 50000 50000 50000>,
+		<50000 50000 50000 50000 50000 50000 50000>,
+		<50000 50000 50000 50000 50000 50000 50000>,
+		<50000 50000 50000 50000 50000 50000 50000>,
+		<50000 50000 50000 50000 50000 50000 50000>,
+		<50000 50000 50000 50000 50000 50000 50000>;
+
+	qcom,cpr-fuse-range-corner-quot-adjustment =
+		<   95    95    95    95    95    95    95>,
+		<   95    95    95    95    95    95    95>,
+		<   95    95    95    95    95    95    95>,
+		<   95    95    95    95    95    95    95>,
+		<   95    95    95    95    95    95    95>,
+		<   95    95    95    95    95    95    95>;
 };
 
 &modem_mem {
@@ -319,82 +356,3 @@
 	};
 };
 
-/* GPU overrides */
-&msm_gpu {
-
-	/delete-property/qcom,initial-pwrlevel;
-	qcom,initial-pwrlevel = <3>;
-
-	/delete-node/qcom,gpu-pwrlevel-bins;
-	/delete-node/qcom,gpu-pwrlevels;
-	/* Power levels */
-	qcom,gpu-pwrlevels {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		compatible = "qcom,gpu-pwrlevels";
-
-		/* SUPER TURBO */
-		qcom,gpu-pwrlevel@0 {
-			reg = <0>;
-			qcom,gpu-freq = <475000000>;
-			qcom,bus-freq = <10>;
-			qcom,bus-min = <10>;
-			qcom,bus-max = <10>;
-		};
-
-		/* TURBO */
-		qcom,gpu-pwrlevel@1 {
-			reg = <1>;
-			qcom,gpu-freq = <450000000>;
-			qcom,bus-freq = <9>;
-			qcom,bus-min = <9>;
-			qcom,bus-max = <10>;
-		};
-
-		/* NOM+ */
-		qcom,gpu-pwrlevel@2 {
-			reg = <2>;
-			qcom,gpu-freq = <400000000>;
-			qcom,bus-freq = <7>;
-			qcom,bus-min = <6>;
-			qcom,bus-max = <9>;
-		};
-
-		/* NOM */
-		qcom,gpu-pwrlevel@3 {
-			reg = <3>;
-			qcom,gpu-freq = <375000000>;
-			qcom,bus-freq = <6>;
-			qcom,bus-min = <5>;
-			qcom,bus-max = <8>;
-		};
-
-		/* SVS+ */
-		qcom,gpu-pwrlevel@4 {
-			reg = <4>;
-			qcom,gpu-freq = <300000000>;
-			qcom,bus-freq = <5>;
-			qcom,bus-min = <4>;
-			qcom,bus-max = <7>;
-		};
-
-		/* SVS */
-		qcom,gpu-pwrlevel@5 {
-			reg = <5>;
-			qcom,gpu-freq = <216000000>;
-			qcom,bus-freq = <3>;
-			qcom,bus-min = <1>;
-			qcom,bus-max = <4>;
-		};
-
-		/* XO */
-		qcom,gpu-pwrlevel@6 {
-			reg = <6>;
-			qcom,gpu-freq = <19200000>;
-			qcom,bus-freq = <0>;
-			qcom,bus-min = <0>;
-			qcom,bus-max = <0>;
-		};
-	};
-};

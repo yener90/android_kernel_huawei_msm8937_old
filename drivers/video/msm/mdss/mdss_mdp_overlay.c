@@ -3912,6 +3912,11 @@ static int mdss_bl_scale_config(struct msm_fb_data_type *mfd,
 {
 	int ret = 0;
 	int curr_bl;
+	if(!mfd->allow_bl_update)
+	{
+	pr_err("[Warning], mdss_bl_scale_config, allow_bl_update = false, bl_level = %d\n", mfd->bl_level);
+	return 0;
+	}
 	mutex_lock(&mfd->bl_lock);
 	curr_bl = mfd->bl_level;
 	mfd->bl_scale = data->scale;

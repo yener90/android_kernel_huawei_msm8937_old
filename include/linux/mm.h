@@ -2049,6 +2049,7 @@ static inline struct page *follow_page(struct vm_area_struct *vma,
 #define FOLL_NUMA	0x200	/* force NUMA hinting page fault */
 #define FOLL_MIGRATION	0x400	/* wait for page to replace migration entry */
 #define FOLL_TRIED	0x800	/* a retry, previous pass started an IO */
+#define FOLL_COW	0x4000	/* internal GUP flag */
 
 typedef int (*pte_fn_t)(pte_t *pte, pgtable_t token, unsigned long addr,
 			void *data);
@@ -2105,7 +2106,7 @@ void drop_pagecache_sb(struct super_block *sb, void *unused);
 unsigned long shrink_slab(struct shrink_control *shrink,
 			  unsigned long nr_pages_scanned,
 			  unsigned long lru_pages);
-
+void drop_pagecache(void);
 #ifndef CONFIG_MMU
 #define randomize_va_space 0
 #else
@@ -2195,6 +2196,7 @@ struct reclaim_param {
 	int nr_to_reclaim;
 	/* pages reclaimed */
 	int nr_reclaimed;
+	bool inactive_lru;
 };
 extern struct reclaim_param reclaim_task_anon(struct task_struct *task,
 		int nr_to_reclaim);

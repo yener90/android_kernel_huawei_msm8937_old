@@ -17,9 +17,448 @@
 #include "msm_camera_i2c_mux.h"
 #include <linux/regulator/rpm-smd-regulator.h>
 #include <linux/regulator/consumer.h>
+#ifdef CONFIG_HUAWEI_DSM
+#include "msm_camera_dsm.h"
+#endif
 
+#include "sensor_otp_common_if.h"
+/* optimize camera print mipi packet and frame count log*/
+#include "./msm.h"
+#include "./csid/msm_csid.h"
+#include "./eeprom/msm_eeprom.h"
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
+
+#ifdef CONFIG_HUAWEI_DSM
+void  camera_report_dsm_err_msm_sensor(struct msm_sensor_ctrl_t *s_ctrl, int type, int err_num , const char* str);
+#endif
+
+//add for 5005 OTP
+#define gc5005_USE_OTP
+#ifdef gc5005_USE_OTP
+#define IMAGE_H_MIRROR
+#define DD_PARAM_QTY 			200
+#define WINDOW_WIDTH  			0x0a30 //2608 max effective pixels
+#define WINDOW_HEIGHT 			0x07a0 //1952
+
+struct otp_info {
+	uint16_t module_id;
+	uint16_t lens_vcmid;
+	uint16_t rg_gain;
+	uint16_t bg_gain;
+	uint16_t wb_flag;//0:Empty 1:Success 2:Invalid
+	uint16_t dd_param_x[DD_PARAM_QTY];
+	uint16_t dd_param_y[DD_PARAM_QTY];
+	uint16_t dd_param_type[DD_PARAM_QTY];
+	uint16_t dd_cnt;
+	uint16_t dd_flag;//0:Empty 1:Success 2:Invalid
+	uint16_t golden_rg;
+	uint16_t golden_bg;
+	uint16_t checksum;
+}otp_info;
+
+typedef enum{
+	otp_page0=0,
+	otp_page1,
+}otp_page;
+
+typedef enum{
+	otp_close=0,
+	otp_open,
+}otp_state;
+
+static uint16_t gc5005_Sensor_ReadReg(
+	struct msm_sensor_ctrl_t *s_ctrl,uint8_t reg_addr)
+{
+	uint16_t reg_value = 0;
+	s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+				s_ctrl->sensor_i2c_client,
+				reg_addr,
+				&reg_value, MSM_CAMERA_I2C_BYTE_DATA);
+	return reg_value;
+}
+
+static void gc5005_Sensor_WriteReg(
+	struct msm_sensor_ctrl_t *s_ctrl,uint8_t reg_addr,uint8_t reg_value)
+{
+	s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(
+		s_ctrl->sensor_i2c_client,reg_addr,reg_value, MSM_CAMERA_I2C_BYTE_DATA);
+}
+
+static uint8_t gc5005_read_otp(struct msm_sensor_ctrl_t *s_ctrl,uint8_t addr)
+{
+	uint8_t value;
+	gc5005_Sensor_WriteReg(s_ctrl, 0xfe,0x00);
+	gc5005_Sensor_WriteReg(s_ctrl, 0xd5,addr);
+	gc5005_Sensor_WriteReg(s_ctrl, 0xf3,0x20);
+	value = gc5005_Sensor_ReadReg(s_ctrl, 0xd7);
+	return value;
+}
+
+static void gc5005_select_page_otp(struct msm_sensor_ctrl_t *s_ctrl,otp_page otp_select_page)
+{
+	uint8_t page;
+	gc5005_Sensor_WriteReg(s_ctrl, 0xfe,0x00);
+	page = gc5005_Sensor_ReadReg(s_ctrl, 0xd4);
+	switch(otp_select_page)
+	{
+	case otp_page0:
+		page = page & 0xfb;
+		break;
+	case otp_page1:
+		page = page | 0x04;
+		break;
+	default:
+		break;
+	}
+	usleep(5 * 1000);
+	gc5005_Sensor_WriteReg(s_ctrl, 0xd4,page);
+}
+
+static void gc5005_gcore_read_otp_info(struct msm_sensor_ctrl_t *s_ctrl)
+{
+	uint8_t flag0,flag_group;
+	uint8_t index,i,j,cnt=0;
+	uint8_t start_add;
+	uint8_t total_number=0;
+	uint8_t check_dd_flag,type;
+	uint8_t dd0=0,dd1=0,dd2=0;
+	uint16_t x,y;
+	uint8_t dd_rom_start,offset;
+	memset(&otp_info,0,sizeof(otp_info));
+//Ready
+	gc5005_select_page_otp(s_ctrl,otp_page0);
+	flag0 = gc5005_read_otp(s_ctrl,0x00);
+	gc5005_select_page_otp(s_ctrl,otp_page1);
+	total_number = gc5005_read_otp(s_ctrl,0x28) + gc5005_read_otp(s_ctrl,0x29);
+//For GC
+//DD
+	switch(flag0&0x03)
+	{
+	case 0x00:
+		otp_info.dd_flag = 0x00;
+		break;
+	case 0x01:
+		gc5005_select_page_otp(s_ctrl,otp_page0);
+		dd_rom_start=0x03;
+		offset = 0;
+		for(i=0; i<total_number; i++)
+		{
+			if(i==31)
+			{
+				gc5005_select_page_otp(s_ctrl,otp_page1);
+				dd_rom_start=0x2a;
+				offset = 124;//31*4
+			}
+			check_dd_flag = gc5005_read_otp(s_ctrl,dd_rom_start + 4*i -offset + 3);
+			if(check_dd_flag&0x10)
+			{//Read OTP
+				type = check_dd_flag&0x0f;
+				dd0 = gc5005_read_otp(s_ctrl,dd_rom_start + 4*i -offset);
+				dd1 = gc5005_read_otp(s_ctrl,dd_rom_start + 4*i -offset + 1);
+				dd2 = gc5005_read_otp(s_ctrl,dd_rom_start + 4*i -offset + 2);
+				x = ((dd1&0x0f)<<8) + dd0;
+				y = (dd2<<4) + ((dd1&0xf0)>>4);
+				if(type == 3)
+				{
+					for(j=0; j<4; j++)
+					{
+						otp_info.dd_param_x[cnt] = x;
+						otp_info.dd_param_y[cnt] = y + j;
+						otp_info.dd_param_type[cnt++] = 2;
+					}
+				}
+				else if(type == 2)
+				{
+					y = ((y-1)/4)*4+1;
+					for(j=0; j<4; j++)
+					{
+						otp_info.dd_param_x[cnt] = x;
+						otp_info.dd_param_y[cnt] = y + j;
+						otp_info.dd_param_type[cnt++] = 2;
+					}
+				}
+				else
+				{
+					otp_info.dd_param_x[cnt] = x;
+					otp_info.dd_param_y[cnt] = y;
+					otp_info.dd_param_type[cnt++] = type;
+				}
+			}
+			else
+			{
+				//CDBG("GC5005_OTP_DD:check_id[%d] = %x,checkid error!!\n",i,check_dd_flag);
+			}
+		}
+		otp_info.dd_cnt = cnt;
+		otp_info.dd_flag = 0x01;
+		break;
+	case 0x02:
+	case 0x03:
+		//CDBG("GC5005_OTP_DD is Invalid !!\n");
+		otp_info.dd_flag = 0x02;
+		break;
+	default :
+		break;
+	}
+//INFO&WB&Golden
+	gc5005_select_page_otp(s_ctrl,otp_page1);
+	//flag1 = gc5005_read_otp(s_ctrl,0x00);
+	for(index=0;index<3;index++)
+	{
+		start_add = index*8;
+		flag_group = gc5005_read_otp(s_ctrl,start_add);
+		if(flag_group==0x55)
+		{
+			otp_info.module_id = gc5005_read_otp(s_ctrl,start_add + 1) & 0x1f;
+			otp_info.lens_vcmid = (gc5005_read_otp(s_ctrl,start_add + 1) & 0xE0)>>5;
+			otp_info.rg_gain = ((gc5005_read_otp(s_ctrl,start_add + 6) & 0x03)<< 8)|gc5005_read_otp(s_ctrl,start_add + 2);
+			otp_info.bg_gain = ((gc5005_read_otp(s_ctrl,start_add + 6) & 0x0c)<< 6)|gc5005_read_otp(s_ctrl,start_add + 3);
+			otp_info.golden_rg =((gc5005_read_otp(s_ctrl,start_add + 6) & 0x30)<< 4)|gc5005_read_otp(s_ctrl,start_add + 4);
+			otp_info.golden_bg = ((gc5005_read_otp(s_ctrl,start_add + 6) & 0xc0)<< 2)|gc5005_read_otp(s_ctrl,start_add + 5);
+			otp_info.checksum = gc5005_read_otp(s_ctrl,start_add + 7);
+			otp_info.wb_flag = otp_info.wb_flag|0x01;
+		}
+		else
+		{
+			otp_info.wb_flag = otp_info.wb_flag|0x00;
+		}
+	}
+}
+
+static void gc5005_gcore_update_dd(struct msm_sensor_ctrl_t *s_ctrl)
+{
+	uint16_t i=0,j=0,n=0,m=0,s=0,e=0;
+	uint16_t temp_x=0,temp_y=0;
+	uint8_t temp_type=0;
+	uint8_t temp_val0,temp_val1,temp_val2;
+	/*TODO*/
+	if(0x01 ==otp_info.dd_flag)
+	{
+#if defined(IMAGE_NORMAL_MIRROR)
+		for(i=0; i<otp_info.dd_cnt; i++)
+		{
+			if(otp_info.dd_param_type[i]==0)
+			{
+				otp_info.dd_param_x[i]= WINDOW_WIDTH - otp_info.dd_param_x[i] + 1;
+			}
+			else if(otp_info.dd_param_type[i]==1)
+			{
+				otp_info.dd_param_x[i]= WINDOW_WIDTH - otp_info.dd_param_x[i] - 1;
+			}
+			else
+			{
+				otp_info.dd_param_x[i]= WINDOW_WIDTH - otp_info.dd_param_x[i];
+			}
+		}
+#elif defined(IMAGE_H_MIRROR)
+		//do nothing
+#elif defined(IMAGE_V_MIRROR)
+		for(i=0; i<otp_info.dd_cnt; i++)
+		{
+			if(otp_info.dd_param_type[i]==0)
+			{
+				otp_info.dd_param_x[i]= WINDOW_WIDTH - otp_info.dd_param_x[i];
+				otp_info.dd_param_y[i]= WINDOW_HEIGHT - otp_info.dd_param_y[i];
+			}
+			else if(otp_info.dd_param_type[i]==1)
+			{
+				otp_info.dd_param_x[i]= WINDOW_WIDTH - otp_info.dd_param_x[i]-1;
+				otp_info.dd_param_y[i]= WINDOW_HEIGHT - otp_info.dd_param_y[i]+1;
+			}
+			else
+			{
+				otp_info.dd_param_x[i]= WINDOW_WIDTH - otp_info.dd_param_x[i];
+				otp_info.dd_param_y[i]= WINDOW_HEIGHT - otp_info.dd_param_y[i] + 1;
+			}
+		}
+#elif defined(IMAGE_HV_MIRROR)
+		for(i=0; i<otp_info.dd_cnt; i++)
+		{
+			otp_info.dd_param_y[i]= WINDOW_HEIGHT - otp_info.dd_param_y[i] + 1;
+		}
+#endif
+		//y
+		for(i=0 ; i< otp_info.dd_cnt-1; i++)
+		{
+			for(j = i+1; j < otp_info.dd_cnt; j++)
+			{
+				if(otp_info.dd_param_y[i] > otp_info.dd_param_y[j])
+				{
+					temp_x = otp_info.dd_param_x[i];
+					otp_info.dd_param_x[i] = otp_info.dd_param_x[j];
+					otp_info.dd_param_x[j] = temp_x;
+					temp_y = otp_info.dd_param_y[i];
+					otp_info.dd_param_y[i] = otp_info.dd_param_y[j];
+					otp_info.dd_param_y[j] = temp_y;
+					temp_type = otp_info.dd_param_type[i];
+					otp_info.dd_param_type[i] = otp_info.dd_param_type[j];
+					otp_info.dd_param_type[j]= temp_type;
+				}
+			}
+		}
+		//x
+		for(i=0; i<otp_info.dd_cnt; i++)
+		{
+			if(otp_info.dd_param_y[i]==otp_info.dd_param_y[i+1])
+			{
+				s=i++;
+				while((otp_info.dd_param_y[s] == otp_info.dd_param_y[i+1])&&(i<otp_info.dd_cnt-1))
+					i++;
+				e=i;
+				for(n=s; n<e; n++)
+				{
+					for(m=n+1; m<e+1; m++)
+					{
+						if(otp_info.dd_param_x[n] > otp_info.dd_param_x[m])
+						{
+							temp_x = otp_info.dd_param_x[n];
+							otp_info.dd_param_x[n] = otp_info.dd_param_x[m];
+							otp_info.dd_param_x[m] = temp_x;
+							temp_y = otp_info.dd_param_y[n];
+							otp_info.dd_param_y[n] = otp_info.dd_param_y[m];
+							otp_info.dd_param_y[m] = temp_y;
+							temp_type = otp_info.dd_param_type[n];
+							otp_info.dd_param_type[n] = otp_info.dd_param_type[m];
+							otp_info.dd_param_type[m]= temp_type;
+						}
+					}
+				}
+			}
+		}
+		//write SRAM
+		gc5005_Sensor_WriteReg(s_ctrl, 0xfe,0x01);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xbe,0x00);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xa9,0x01);
+		for(i=0; i<otp_info.dd_cnt; i++)
+		{
+			temp_val0 = otp_info.dd_param_x[i]& 0x00ff;
+			temp_val1 = ((otp_info.dd_param_y[i]<<4)& 0x00f0) + ((otp_info.dd_param_x[i]>>8)&0X000f);
+			temp_val2 = (otp_info.dd_param_y[i]>>4) & 0xff;
+			gc5005_Sensor_WriteReg(s_ctrl, 0xaa,i);
+			gc5005_Sensor_WriteReg(s_ctrl, 0xac,temp_val0);
+			gc5005_Sensor_WriteReg(s_ctrl, 0xac,temp_val1);
+			gc5005_Sensor_WriteReg(s_ctrl, 0xac,temp_val2);
+			gc5005_Sensor_WriteReg(s_ctrl, 0xac,otp_info.dd_param_type[i]);
+		}
+		gc5005_Sensor_WriteReg(s_ctrl, 0xbe,0x01);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xfe,0x00);
+	}
+}
+
+static void gc5005_gcore_update_awb(struct msm_sensor_ctrl_t *s_ctrl)
+{
+	uint16_t r_gain_current = 0 , g_gain_current = 0 , b_gain_current = 0 , base_gain = 0;
+	uint16_t r_gain = 128, g_gain = 128, b_gain = 128;
+	uint16_t rg_typical=0x90 , bg_typical=0x95;
+	if(0x01==(otp_info.wb_flag&0x01))
+	{
+		if((0!=otp_info.golden_rg )&& (0!=otp_info.golden_bg))
+		{
+		rg_typical=otp_info.golden_rg;
+		bg_typical=otp_info.golden_bg;
+		}
+		if((0==otp_info.rg_gain)||(0==otp_info.bg_gain))
+		{
+			otp_info.rg_gain = rg_typical;
+			otp_info.bg_gain = bg_typical;
+		}
+		r_gain_current = 256 * rg_typical/otp_info.rg_gain;
+		b_gain_current = 256 * bg_typical/otp_info.bg_gain;
+		g_gain_current = 256;
+		base_gain = (r_gain_current<b_gain_current) ? r_gain_current : b_gain_current;
+		base_gain = (base_gain<g_gain_current) ? base_gain : g_gain_current;
+		r_gain = 0x80 * r_gain_current / base_gain;
+		g_gain = 0x80 * g_gain_current / base_gain;
+		b_gain = 0x80 * b_gain_current / base_gain;
+		gc5005_Sensor_WriteReg(s_ctrl, 0xfe,0x00);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xb8,g_gain);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xb9,g_gain);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xba,r_gain);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xbb,r_gain);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xbc,b_gain);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xbd,b_gain);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xbe,g_gain);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xbf,g_gain);
+	}
+}
+
+static void gc5005_gcore_update_otp(struct msm_sensor_ctrl_t *s_ctrl)
+{
+	gc5005_gcore_update_dd(s_ctrl);
+	gc5005_gcore_update_awb(s_ctrl);
+}
+
+static void gc5005_gcore_enable_otp(struct msm_sensor_ctrl_t *s_ctrl,otp_state state)
+{
+	uint8_t otp_clk,otp_en;
+	otp_clk = gc5005_Sensor_ReadReg(s_ctrl, 0xfa);
+	otp_en= gc5005_Sensor_ReadReg(s_ctrl, 0xd4);
+	if(state)
+	{
+		otp_clk = otp_clk | 0x10;
+		otp_en = otp_en | 0x80;
+		mdelay(5);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xfa,otp_clk);//0xfa[6]:OTP_CLK_en
+		gc5005_Sensor_WriteReg(s_ctrl, 0xd4,otp_en);//0xd4[7]:OTP_en
+	}
+	else
+	{
+		otp_en = otp_en & 0x7f;
+		otp_clk = otp_clk & 0xef;
+		mdelay(5);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xd4,otp_en);
+		gc5005_Sensor_WriteReg(s_ctrl, 0xfa,otp_clk);
+	}
+}
+
+static void gc5005_otp(struct msm_sensor_ctrl_t *s_ctrl)
+{
+	gc5005_Sensor_WriteReg(s_ctrl, 0xfe,0x00);
+	gc5005_Sensor_WriteReg(s_ctrl, 0xfe,0x00);
+	gc5005_Sensor_WriteReg(s_ctrl, 0xfe,0x00);
+	gc5005_Sensor_WriteReg(s_ctrl, 0xf7,0x01);//pll enable
+	gc5005_Sensor_WriteReg(s_ctrl, 0xf8,0x11);//pll mode
+	gc5005_Sensor_WriteReg(s_ctrl, 0xf9,0xaa);
+	gc5005_Sensor_WriteReg(s_ctrl, 0xfa,0x84);
+	gc5005_Sensor_WriteReg(s_ctrl, 0xfc,0x8a);//[6]wclk
+	gc5005_gcore_enable_otp(s_ctrl,otp_open);
+	gc5005_gcore_read_otp_info(s_ctrl);
+	gc5005_gcore_enable_otp(s_ctrl,otp_close);
+}
+#endif
+//end OTP
+
+static int msm_sensor_check_cam_id(struct msm_sensor_ctrl_t *s_ctrl)
+{
+	int rc=0,mcam_id=-1;
+	const char *sensor_name;
+	unsigned gpio;
+	struct msm_camera_slave_info *slave_info = s_ctrl->sensordata->slave_info;
+
+	if(!s_ctrl->sensordata->power_info.gpio_conf->gpio_num_info->valid[SENSOR_GPIO_CAM_ID])
+		return 0;
+
+	sensor_name = s_ctrl->sensordata->sensor_name;
+
+	if(!slave_info->cam_id_info){
+		CDBG("%s, %s, no need to check camera id", __func__, sensor_name);
+		return 0;
+	}
+
+	gpio=s_ctrl->sensordata->power_info.gpio_conf->gpio_num_info->gpio_num[SENSOR_GPIO_CAM_ID];
+	mcam_id=gpio_get_value(gpio);
+	if(mcam_id==slave_info->cam_id_info->cam_expected_id){
+		CDBG("%s:%s gpio %d except value:%d match",__func__,sensor_name,gpio,mcam_id);
+		rc=0;
+	}else{
+		pr_err("%s:%s gpio %d value:read %d not match cam_expected_id=%d",__func__,sensor_name,gpio,mcam_id, slave_info->cam_id_info->cam_expected_id);
+		rc=-ENODEV;
+	}
+
+	return rc;
+}
+
 
 static void msm_sensor_adjust_mclk(struct msm_camera_power_ctrl_t *ctrl)
 {
@@ -136,6 +575,79 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 		sensor_i2c_client);
 }
 
+#define MAX_EEPROM_NUM 2
+static int msm_sensor_check_vendor_id(struct msm_sensor_ctrl_t *s_ctrl)
+{
+    int rc = 0;
+    int i = 0;
+    struct v4l2_subdev *subdev_eeproms[MAX_EEPROM_NUM] = {NULL};
+    uint32_t subdev_id[MAX_EEPROM_NUM] = {0};
+    struct  msm_sensor_info_t *sensor_info = s_ctrl->sensordata->sensor_info;
+    struct msm_eeprom_get_vendor_t eeprom_vendor = {0};
+    struct msm_eeprom_ctrl_t *e_ctrl = NULL;
+
+    if(sensor_info->subdev_id[SUB_MODULE_EEPROM] < 0)
+    {
+        pr_info("%s: no eeprom subdev sensor: %s\n",__func__,s_ctrl->sensordata->sensor_name);
+        return rc;
+    }
+    if(!s_ctrl->sensordata->slave_info->cam_id_info || !s_ctrl->sensordata->slave_info->cam_id_info->cam_vendor_id)
+    {
+        pr_info("%s: cam_vendor_id is zero sensor: %s\n",__func__,s_ctrl->sensordata->sensor_name);
+        return rc;
+    }
+
+    msm_sd_get_subdevs(subdev_eeproms,MAX_EEPROM_NUM,"msm_eeprom");
+
+    for(i = 0; i<MAX_EEPROM_NUM; i++)
+    {
+        if(!subdev_eeproms[i])
+            break;
+
+        v4l2_subdev_call(subdev_eeproms[i], core, ioctl, 
+            VIDIOC_MSM_SENSOR_GET_SUBDEV_ID, &subdev_id[i]);
+
+        pr_info("%s: sensor:%s subdev_id[%d]=%d eeprom_subid=%d \n",__func__,s_ctrl->sensordata->sensor_name,i,subdev_id[i],\
+            sensor_info->subdev_id[SUB_MODULE_EEPROM]);
+
+        if(sensor_info->subdev_id[SUB_MODULE_EEPROM] != subdev_id[i])
+        {
+            continue;
+        }
+
+        if(subdev_eeproms[i]->dev_priv)
+            e_ctrl = subdev_eeproms[i]->dev_priv;
+
+        if(e_ctrl && e_ctrl->msm_eeprom_get_vendor_id)
+        {
+            eeprom_vendor.vendor_offset = s_ctrl->sensordata->slave_info->cam_id_info->cam_vendor_offset;
+            pr_info("%s: from lib vendor_offset = %d\n",__func__, \
+                s_ctrl->sensordata->slave_info->cam_id_info->cam_vendor_offset);
+            if(!e_ctrl->msm_eeprom_get_vendor_id(e_ctrl,&eeprom_vendor))
+            {
+                //todo check eeprom_vendor.vendor_id with sensorinfo from .h file
+                pr_info("%s: from lib vendor_id = %d\n",__func__, \
+                s_ctrl->sensordata->slave_info->cam_id_info->cam_vendor_id);
+
+                if(eeprom_vendor.vendor_id != s_ctrl->sensordata->slave_info->cam_id_info->cam_vendor_id)
+                {
+                    pr_err("%s: sensor:%s vendor id check fail\n",__func__,s_ctrl->sensordata->sensor_name);
+                    return -1;
+                }
+
+                return 0;
+            }
+            else
+            {
+                pr_err("%s: sensor:%s msm_eeprom_get_vendor_id fail\n",__func__,s_ctrl->sensordata->sensor_name);
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 {
 	int rc;
@@ -181,9 +693,21 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 				s_ctrl->sensor_device_type, sensor_i2c_client);
 			msleep(20);
 			continue;
-		} else {
-			break;
 		}
+
+		rc = msm_sensor_check_cam_id(s_ctrl);
+		if(rc < 0){
+			msm_camera_power_down(power_info,
+				s_ctrl->sensor_device_type, sensor_i2c_client);
+            break;
+		}
+		/*no matter cam id match or not, no need retry, break directly*/
+		rc = msm_sensor_check_vendor_id(s_ctrl);
+		if(rc < 0){
+			msm_camera_power_down(power_info,
+				s_ctrl->sensor_device_type, sensor_i2c_client);
+		}
+		break;
 	}
 
 	return rc;
@@ -240,6 +764,13 @@ int msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl)
 		return rc;
 	}
 
+#ifdef gc5005_USE_OTP
+	if(!strcmp(sensor_name,"gc5005")){
+		pr_err("--travis--5005k enter gc5005otp");
+		gc5005_otp(s_ctrl);
+		gc5005_gcore_update_otp(s_ctrl);
+    }
+#endif
 	pr_debug("%s: read id: 0x%x expected id 0x%x:\n",
 			__func__, chipid, slave_info->sensor_id);
 	if (msm_sensor_id_by_mask(s_ctrl, chipid) != slave_info->sensor_id) {
@@ -295,6 +826,51 @@ static int msm_sensor_get_af_status(struct msm_sensor_ctrl_t *s_ctrl,
 	set the status in the *status variable accordingly*/
 	return 0;
 }
+static int msm_sensor_get_afc_otp_info(struct msm_sensor_ctrl_t *s_ctrl,
+			void __user *argp)
+{
+	int rc = 0;
+#ifdef CONFIG_COMPAT
+	struct sensorb_cfg_data32 *cdata = (struct sensorb_cfg_data32 *)argp;
+	if (copy_to_user((void *)compat_ptr(cdata->cfg.setting),
+		(void *)&s_ctrl->afc_otp_info, sizeof(struct msm_sensor_afc_otp_info))) {
+		pr_err("%s:%d CONFIG_COMPAT afc_otp_info copy failed\n", __func__, __LINE__);
+		rc = -EFAULT;
+	}
+#else
+	struct sensorb_cfg_data *cdata = (struct sensorb_cfg_data *)argp;
+	if (copy_to_user((void *)cdata->cfg.setting,
+		(void *)&s_ctrl->afc_otp_info, sizeof(struct msm_sensor_afc_otp_info))) {
+		pr_err("%s:%d afc_otp_info copy failed\n", __func__, __LINE__);
+		rc = -EFAULT;
+	}
+#endif
+
+	return rc;
+}
+
+static int msm_sensor_get_awb_otp_info(struct msm_sensor_ctrl_t *s_ctrl,
+			void __user *argp)
+{
+	int rc = 0;
+#ifdef CONFIG_COMPAT
+	struct sensorb_cfg_data32 *cdata = (struct sensorb_cfg_data32 *)argp;
+	if (copy_to_user( (void *)compat_ptr(cdata->cfg.setting),
+		(void*)& s_ctrl->awb_otp_info, sizeof(struct msm_sensor_awb_otp_info))) {
+		pr_err("%s:%d awb_otp_info copy failed\n", __func__, __LINE__);
+		rc = -EFAULT;
+	}
+
+#else
+	struct sensorb_cfg_data *cdata = (struct sensorb_cfg_data *)argp;
+	if (copy_to_user((void *)cdata->cfg.setting,
+		(void *)& s_ctrl->awb_otp_info, sizeof(struct msm_sensor_awb_otp_info))) {
+		pr_err("%s:%d awb_otp_info copy failed\n", __func__, __LINE__);
+		rc = -EFAULT;
+	}
+#endif
+	return rc;
+}
 
 static long msm_sensor_subdev_ioctl(struct v4l2_subdev *sd,
 			unsigned int cmd, void *arg)
@@ -330,6 +906,189 @@ static long msm_sensor_subdev_ioctl(struct v4l2_subdev *sd,
 	}
 }
 
+/* optimize camera print mipi packet and frame count log*/
+static int read_times = 0;
+#define HW_PRINT_PACKET_NUM_TIME 5 //print 5 times
+#define HW_READ_PACKET_NUM_TIME 100 //100ms
+#define MAX_CSID_NUM 3// from dtsi qcom,csid-sd-index
+struct hw_sensor_fct {
+	char *sensor_name; //sensor name from sensor_init.c
+	uint32_t fct_reg_addr; //the frame count reg addr
+	enum msm_camera_i2c_data_type type; //frame count reg data type
+};
+
+
+#ifdef CONFIG_HUAWEI_DSM
+static int csi_pkg_count = 0;
+static struct sensor_frame_count{
+	int sensor_frame_read[HW_PRINT_PACKET_NUM_TIME];
+	int count;
+} sensor_frame_dsm_cnt;
+#endif
+
+
+/*
+sensor name      frame count reg addr
+imx214       ---0x0005
+*/
+
+struct hw_sensor_fct sensor_fct_list[] ={
+	{"imx298_liteon",0x0005,MSM_CAMERA_I2C_BYTE_DATA},
+	{"imx298_lgit",0x0005,MSM_CAMERA_I2C_BYTE_DATA},
+};
+
+static int hw_sensor_read_framecount(struct msm_sensor_ctrl_t *s_ctrl)
+{
+	int rc = -1;
+	int i = 0;
+	uint16_t framecount = 0;
+	struct msm_camera_i2c_client *sensor_i2c_client = NULL;
+	int sensor_list_size = sizeof(sensor_fct_list) / sizeof(sensor_fct_list[0]);
+
+	if(!s_ctrl || !s_ctrl->sensordata || !s_ctrl->sensordata->sensor_name)
+	return rc;
+
+	//check current sensor support read frame count reg?
+	for(i  = 0; i < sensor_list_size; i++)
+	{
+		if(0 == strcmp(s_ctrl->sensordata->sensor_name, sensor_fct_list[i].sensor_name))
+		{
+			break;
+		}
+	}
+	if(i >= sensor_list_size)
+	{
+		pr_info("%s:%s don't support read frame count \n",__func__,
+		s_ctrl->sensordata->sensor_name);
+		return rc;
+	}
+
+	//pr_info("%s:%s i=%d support read frame count! \n",__func__,
+	//s_ctrl->sensordata->sensor_name, i);
+
+	sensor_i2c_client = s_ctrl->sensor_i2c_client;
+
+	if(!sensor_i2c_client)
+	{
+		pr_err("%s: sensor_i2c_client is NULL \n",__func__);
+		return rc;
+	}
+
+	rc = sensor_i2c_client->i2c_func_tbl->i2c_read(
+		sensor_i2c_client, sensor_fct_list[i].fct_reg_addr,
+		&framecount, sensor_fct_list[i].type);
+
+	if(rc < 0)
+	{
+		pr_err("%s: read framecount failed\n", __func__);
+		return rc;
+	}
+
+	return framecount;
+}
+
+static void read_framecount_work_handler(struct work_struct *work)
+{
+	struct v4l2_subdev *subdev_csids[MAX_CSID_NUM] = {NULL};
+	struct csid_device *csid_dev = NULL;
+
+	int i = 0;
+	int frm_cnt = 0;
+	uint32_t csid_pkg = 0;
+	struct msm_sensor_ctrl_t *s_ctrl = container_of(work, struct msm_sensor_ctrl_t,frm_cnt_work.work);
+	if(!s_ctrl || s_ctrl->sensor_state != MSM_SENSOR_POWER_UP || (read_times <= 0))
+	{
+		read_times = 0;
+		pr_err("%s:%d\n",__func__,__LINE__);
+		return;
+	}
+
+	//read sensor send
+	if(s_ctrl->func_tbl->sensor_read_framecount)
+	{
+		frm_cnt = s_ctrl->func_tbl->sensor_read_framecount(s_ctrl);
+		if(frm_cnt > 0)
+			pr_info("%s: read_times[%d] framecount = 0x%x \n",__func__,read_times,frm_cnt);
+	}
+#ifdef CONFIG_HUAWEI_DSM
+	if (sensor_frame_dsm_cnt.count < HW_PRINT_PACKET_NUM_TIME)
+	{
+		sensor_frame_dsm_cnt.sensor_frame_read[sensor_frame_dsm_cnt.count] = frm_cnt;
+		sensor_frame_dsm_cnt.count++;
+	}
+#endif
+
+	//read csid receive 
+	msm_sd_get_subdevs(subdev_csids,MAX_CSID_NUM,"msm_csid");
+
+	//we have two csids
+	//uint32_t subdev_id[MAX_CSID_NUM] = {0};
+	for(i = 0; i<MAX_CSID_NUM; i++)
+	{
+		if(!subdev_csids[i])
+		continue;
+		/*
+		v4l2_subdev_call(subdev_csids[i], core, ioctl, 
+			VIDIOC_MSM_SENSOR_GET_SUBDEV_ID, &subdev_id[i]);
+		*/
+		if(subdev_csids[i]->dev_priv)
+			csid_dev = subdev_csids[i]->dev_priv;
+
+		if(!csid_dev)
+		{
+			read_times = 0;
+			pr_err("%s: csid_dev[%d] is NULL \n",__func__,i);
+			continue;
+		}
+
+		//back camera use csid0, front camera use csid1
+		if(csid_dev->csid_state == CSID_POWER_UP && csid_dev->csid_read_mipi_pkg)
+		{
+			csid_pkg = csid_dev->csid_read_mipi_pkg(csid_dev);
+			pr_info("%s: csid[%d] read_times[%d] total mipi packet = %u\n",__func__,
+				csid_dev->pdev->id, read_times,csid_pkg);
+#ifdef CONFIG_HUAWEI_DSM
+			csi_pkg_count += csid_pkg;
+#endif
+			break;
+		}
+	}
+
+	read_times--;
+	if(read_times > 0) {
+		schedule_delayed_work(&s_ctrl->frm_cnt_work, msecs_to_jiffies(HW_READ_PACKET_NUM_TIME));
+	}
+	#ifdef CONFIG_HUAWEI_DSM
+	else if(csi_pkg_count <= 0)
+	{
+		int len = 0;
+		int rc = 0;
+		memset(camera_dsm_log_buff, 0, MSM_CAMERA_DSM_BUFFER_SIZE);
+		len += snprintf(camera_dsm_log_buff+len, MSM_CAMERA_DSM_BUFFER_SIZE-len, "camera didn't get any frame.\n 5 frame from sensor at the beginning:\n");
+		if ((len < 0) || (len >= MSM_CAMERA_DSM_BUFFER_SIZE -1))
+			pr_err("%s %d. write dsm buf error\n",__func__,__LINE__);
+
+		for (i = 0; i < HW_PRINT_PACKET_NUM_TIME; i++)
+		{
+			len += snprintf(camera_dsm_log_buff+len, MSM_CAMERA_DSM_BUFFER_SIZE-len, "  %d", sensor_frame_dsm_cnt.sensor_frame_read[i]);
+			if ((len < 0) || (len >= MSM_CAMERA_DSM_BUFFER_SIZE -1))
+			pr_err("%s %d. write dsm buf error\n",__func__,__LINE__);
+		}
+	len += snprintf(camera_dsm_log_buff+len, MSM_CAMERA_DSM_BUFFER_SIZE-len, "\n");
+		if ((len < 0) || (len >= MSM_CAMERA_DSM_BUFFER_SIZE -1))
+			pr_err("%s %d. write dsm buf error\n",__func__,__LINE__);
+
+		rc = camera_report_dsm_err(DSM_CAMERA_SENSOR_NO_FRAME, csi_pkg_count, camera_dsm_log_buff);
+		if (rc < 0)
+		{
+			pr_err("%s. report dsm err fail.\n", __func__);
+		}
+	}
+#endif
+
+
+}
+
 #ifdef CONFIG_COMPAT
 static long msm_sensor_subdev_do_ioctl(
 	struct file *file, unsigned int cmd, void *arg)
@@ -356,6 +1115,7 @@ static int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl,
 	struct sensorb_cfg_data32 *cdata = (struct sensorb_cfg_data32 *)argp;
 	int32_t rc = 0;
 	int32_t i = 0;
+	int32_t otp_index = -1;
 	mutex_lock(s_ctrl->msm_sensor_mutex);
 	CDBG("%s:%d %s cfgtype = %d\n", __func__, __LINE__,
 		s_ctrl->sensordata->sensor_name, cdata->cfgtype);
@@ -766,6 +1526,20 @@ static int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl,
 			rc = -EFAULT;
 			break;
 		}
+		/* optimize camera print mipi packet and frame count log*/
+		if(read_times > 0) {
+			pr_info("%s: cancel frm_cnt_work read_times = %d\n",__func__,read_times);
+			read_times = 0;
+			cancel_delayed_work_sync(&s_ctrl->frm_cnt_work);
+#ifdef CONFIG_HUAWEI_DSM
+			csi_pkg_count = 0;
+			sensor_frame_dsm_cnt.count = 0;
+			for (i = 0; i < HW_PRINT_PACKET_NUM_TIME; i++)
+			{
+				sensor_frame_dsm_cnt.sensor_frame_read[i] = 0;
+			}
+#endif
+		}
 		if (s_ctrl->func_tbl->sensor_power_down) {
 			if (s_ctrl->sensordata->misc_regulator)
 				msm_sensor_misc_regulator(s_ctrl, 0);
@@ -782,7 +1556,46 @@ static int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl,
 		} else {
 			rc = -EFAULT;
 		}
+#ifdef CONFIG_HUAWEI_DSM
+		camera_is_closing = 0;
+#endif
 		break;
+	/* optimize camera print mipi packet and frame count log*/
+	case CFG_START_FRM_CNT:
+	{
+		read_times = 0;
+#ifdef CONFIG_HUAWEI_DSM
+		csi_pkg_count = 0;
+		sensor_frame_dsm_cnt.count = 0;
+		for (i = 0; i < HW_PRINT_PACKET_NUM_TIME; i++)
+		{
+			sensor_frame_dsm_cnt.sensor_frame_read[i] = 0;
+		}
+#endif
+		cancel_delayed_work_sync(&s_ctrl->frm_cnt_work);
+
+		read_times = HW_PRINT_PACKET_NUM_TIME;
+		schedule_delayed_work(&s_ctrl->frm_cnt_work, msecs_to_jiffies(HW_READ_PACKET_NUM_TIME));
+		pr_info("%s:%s start read frame count work \n",__func__,s_ctrl->sensordata->sensor_name);
+	}
+	break;
+
+    case CFG_STOP_FRM_CNT:
+	{
+		read_times = 0;
+#ifdef CONFIG_HUAWEI_DSM
+		csi_pkg_count = 0;
+		sensor_frame_dsm_cnt.count = 0;
+		for (i = 0; i < HW_PRINT_PACKET_NUM_TIME; i++)
+		{
+			sensor_frame_dsm_cnt.sensor_frame_read[i] = 0;
+		}
+#endif
+		cancel_delayed_work_sync(&s_ctrl->frm_cnt_work);
+		pr_info("%s:%s stop read frame count work \n",__func__,s_ctrl->sensordata->sensor_name);
+	}
+	break;
+
 	case CFG_SET_STOP_STREAM_SETTING: {
 		struct msm_camera_i2c_reg_setting32 stop_setting32;
 		struct msm_camera_i2c_reg_setting *stop_setting =
@@ -864,8 +1677,56 @@ static int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl,
 			rc = -EFAULT;
 			break;
 		}
+	}
+		break;
+	case CFG_GET_OTP_FLAG: {
+		CDBG("%s,%d: CFG_GET_OTP_FLAG\n", __func__, __LINE__);
+		//if power up
+		if (s_ctrl->sensor_state != MSM_SENSOR_POWER_UP)
+		{
+			pr_err("%s:%d failed: invalid state %d\n", __func__,
+				__LINE__, s_ctrl->sensor_state);
+			rc = -EFAULT;
+			break;
+		}
+		//set otp info
+		if ( is_exist_otp_function(s_ctrl, &otp_index) )
+		{
+			rc = otp_function_lists[otp_index].sensor_otp_function(s_ctrl, otp_index);
+			if (rc < 0)
+			{
+#ifdef CONFIG_HUAWEI_DSM
+			camera_report_dsm_err_msm_sensor(s_ctrl, DSM_CAMERA_OTP_ERR, rc, NULL);
+#endif
+				pr_err("%s:%d failed rc %d\n", __func__,
+					__LINE__, rc);
+			}
+			pr_info("%s,%d s_ctrl->hw_otp_check_flag.mmi_otp_check_flag = 0x%x\n", \
+			__func__, __LINE__, s_ctrl->hw_otp_check_flag.mmi_otp_check_flag);
+		}
+		else
+		{
+		    /*  unsupport otp operation, set the mmi_otp_check_flag = 0 */
+			s_ctrl->hw_otp_check_flag.mmi_otp_check_flag = 0;
+			pr_err("%s, %d: %s unsupport otp operation, mmi_otp_check_flag = 0.\n", __func__,
+					__LINE__, s_ctrl->sensordata->sensor_name);
+		}
+		if (copy_to_user((void *)compat_ptr(cdata->cfg.setting),
+			(void *)&s_ctrl->hw_otp_check_flag, sizeof(struct msm_sensor_mmi_otp_flag))) {
+				pr_err("%s:%d copy failed\n", __func__, __LINE__);
+				rc = -EFAULT;
+				break;
+			}
+
 		break;
 	}
+	case CFG_SET_AFC_OTP_INFO:
+		rc = msm_sensor_get_afc_otp_info(s_ctrl, argp);
+		break;
+
+	case CFG_SET_AWB_OTP_INFO:
+		rc = msm_sensor_get_awb_otp_info(s_ctrl, argp);
+		break;
 
 	default:
 		rc = -EFAULT;
@@ -884,6 +1745,7 @@ int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp)
 	struct sensorb_cfg_data *cdata = (struct sensorb_cfg_data *)argp;
 	int32_t rc = 0;
 	int32_t i = 0;
+	int32_t otp_index = -1;
 	mutex_lock(s_ctrl->msm_sensor_mutex);
 	CDBG("%s:%d %s cfgtype = %d\n", __func__, __LINE__,
 		s_ctrl->sensordata->sensor_name, cdata->cfgtype);
@@ -1253,6 +2115,24 @@ int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp)
 			rc = -EFAULT;
 			break;
 		}
+
+		/* optimize camera print mipi packet and frame count log*/
+		if(read_times > 0) {
+			pr_info("%s: cancel frm_cnt_work read_times = %d\n",__func__,read_times);
+			read_times = 0;
+			cancel_delayed_work_sync(&s_ctrl->frm_cnt_work);
+
+#ifdef CONFIG_HUAWEI_DSM
+			csi_pkg_count = 0;
+			sensor_frame_dsm_cnt.count = 0;
+			for (i = 0; i < HW_PRINT_PACKET_NUM_TIME; i++)
+			{
+			  sensor_frame_dsm_cnt.sensor_frame_read[i] = 0;
+			}
+#endif
+
+		}
+
 		if (s_ctrl->func_tbl->sensor_power_down) {
 			if (s_ctrl->sensordata->misc_regulator)
 				msm_sensor_misc_regulator(s_ctrl, 0);
@@ -1269,7 +2149,45 @@ int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp)
 		} else {
 			rc = -EFAULT;
 		}
+#ifdef CONFIG_HUAWEI_DSM
+		camera_is_closing = 0;
+#endif
 		break;
+	/* optimize camera print mipi packet and frame count log*/
+	case CFG_START_FRM_CNT:
+	{
+		read_times = 0;
+#ifdef CONFIG_HUAWEI_DSM
+		csi_pkg_count = 0;
+		sensor_frame_dsm_cnt.count = 0;
+		for (i = 0; i < HW_PRINT_PACKET_NUM_TIME; i++)
+		{
+			sensor_frame_dsm_cnt.sensor_frame_read[i] = 0;
+		}
+#endif
+		cancel_delayed_work_sync(&s_ctrl->frm_cnt_work);
+
+		read_times = HW_PRINT_PACKET_NUM_TIME;
+		schedule_delayed_work(&s_ctrl->frm_cnt_work, msecs_to_jiffies(HW_READ_PACKET_NUM_TIME));
+		pr_info("%s:%s start read frame count work \n",__func__,s_ctrl->sensordata->sensor_name);
+	}
+	break;
+
+	case CFG_STOP_FRM_CNT:
+	{
+		read_times = 0;
+#ifdef CONFIG_HUAWEI_DSM
+		csi_pkg_count = 0;
+		sensor_frame_dsm_cnt.count = 0;
+		for (i = 0; i < HW_PRINT_PACKET_NUM_TIME; i++)
+		{
+			sensor_frame_dsm_cnt.sensor_frame_read[i] = 0;
+		}
+#endif
+		cancel_delayed_work_sync(&s_ctrl->frm_cnt_work);
+		pr_info("%s:%s stop read frame count work \n",__func__,s_ctrl->sensordata->sensor_name);
+	}
+	break;
 
 	case CFG_SET_STOP_STREAM_SETTING: {
 		struct msm_camera_i2c_reg_setting *stop_setting =
@@ -1346,8 +2264,57 @@ int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp)
 			rc = -EFAULT;
 			break;
 		}
+	}
+		break;
+	case CFG_GET_OTP_FLAG: {
+		CDBG("%s,%d: CFG_GET_OTP_FLAG\n", __func__, __LINE__);
+		//if power up
+		if (s_ctrl->sensor_state != MSM_SENSOR_POWER_UP)
+		{
+			pr_err("%s:%d failed: invalid state %d\n", __func__,
+				__LINE__, s_ctrl->sensor_state);
+			rc = -EFAULT;
+			break;
+		}
+		//set otp info
+		if ( is_exist_otp_function(s_ctrl, &otp_index) )
+		{
+			rc = otp_function_lists[otp_index].sensor_otp_function(s_ctrl, otp_index);
+			if (rc < 0)
+			{
+#ifdef CONFIG_HUAWEI_DSM
+				camera_report_dsm_err_msm_sensor(s_ctrl, DSM_CAMERA_OTP_ERR, rc, NULL);
+#endif
+				pr_err("%s:%d failed rc %d\n", __func__,
+					__LINE__, rc);
+			}
+			pr_info("%s,%d s_ctrl->hw_otp_check_flag.mmi_otp_check_flag = 0x%x\n", \
+			__func__, __LINE__, s_ctrl->hw_otp_check_flag.mmi_otp_check_flag);
+		}
+		else
+		{
+		    /*  unsupport otp operation, set the mmi_otp_check_flag = 0 */
+			s_ctrl->hw_otp_check_flag.mmi_otp_check_flag = 0;
+			pr_err("%s, %d: %s unsupport otp operation, mmi_otp_check_flag = 0.\n", __func__,
+					__LINE__, s_ctrl->sensordata->sensor_name);
+		}
+		if (copy_to_user((void *)cdata->cfg.setting,
+			(void *)&s_ctrl->hw_otp_check_flag, sizeof(struct msm_sensor_mmi_otp_flag))) {
+				pr_err("%s:%d copy failed\n", __func__, __LINE__);
+				rc = -EFAULT;
+				break;
+		}
+
 		break;
 	}
+
+	case CFG_SET_AFC_OTP_INFO:
+		rc = msm_sensor_get_afc_otp_info(s_ctrl, argp);
+		break;
+
+	case CFG_SET_AWB_OTP_INFO:
+		rc = msm_sensor_get_awb_otp_info(s_ctrl, argp);
+		break;
 
 	default:
 		rc = -EFAULT;
@@ -1398,6 +2365,66 @@ static int msm_sensor_v4l2_enum_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
+#ifdef CONFIG_HUAWEI_DSM
+void camera_report_dsm_err_msm_sensor(struct msm_sensor_ctrl_t *s_ctrl, int type, int err_num , const char* str)
+{
+	ssize_t len = 0;
+	int rc = 0;
+
+	memset(camera_dsm_log_buff, 0, MSM_CAMERA_DSM_BUFFER_SIZE);
+
+	if ( (NULL != s_ctrl) && (NULL != s_ctrl->sensordata) )
+	{
+		//get module info
+		len = snprintf(camera_dsm_log_buff,
+				MSM_CAMERA_DSM_BUFFER_SIZE,
+				"Sensor name:%s, eeprom name:%s ",
+				s_ctrl->sensordata->sensor_name,
+				s_ctrl->sensordata->eeprom_name);
+	}
+
+	if ( len >= MSM_CAMERA_DSM_BUFFER_SIZE -1 )
+	{
+		CDBG("write camera_dsm_log_buff overflow.\n");
+		return;
+	}
+	
+	/* camera record error info according to err type */
+	switch(type)
+	{
+		case DSM_CAMERA_OTP_ERR:
+			/* report otp infomation */
+			len += snprintf(camera_dsm_log_buff+len, MSM_CAMERA_DSM_BUFFER_SIZE-len, "[msm_sensor]OTP error.No effective OTP info.\n");
+			if (len >= MSM_CAMERA_DSM_BUFFER_SIZE -1)
+			{
+				CDBG("write camera_dsm_log_buff overflow.\n");
+				return ;
+			}
+			break;
+
+		case DSM_CAMERA_CHIP_ID_NOT_MATCH:
+			/* report otp infomation */
+			len += snprintf(camera_dsm_log_buff+len, MSM_CAMERA_DSM_BUFFER_SIZE-len, "[msm_sensor]Chip ID DON'T MATCH.\n");
+			if (len >= MSM_CAMERA_DSM_BUFFER_SIZE -1)
+			{
+				CDBG("write camera_dsm_log_buff overflow.\n");
+				return ;
+			}
+			break;
+
+		default:
+			break;
+	}
+	
+	rc = camera_report_dsm_err( type, err_num, camera_dsm_log_buff);
+	if (rc < 0)
+	{
+	     pr_err("%s. report dsm err fail.\n", __func__);
+	     return ;
+	}
+	return ;
+}
+#endif
 static struct v4l2_subdev_core_ops msm_sensor_subdev_core_ops = {
 	.ioctl = msm_sensor_subdev_ioctl,
 	.s_power = msm_sensor_power,
@@ -1420,6 +2447,9 @@ static struct msm_sensor_fn_t msm_sensor_func_tbl = {
 	.sensor_power_up = msm_sensor_power_up,
 	.sensor_power_down = msm_sensor_power_down,
 	.sensor_match_id = msm_sensor_match_id,
+	/* optimize camera print mipi packet and frame count log*/
+	.sensor_read_framecount = hw_sensor_read_framecount,
+
 };
 
 static struct msm_camera_i2c_fn_t msm_sensor_cci_func_tbl = {
@@ -1511,5 +2541,7 @@ int32_t msm_sensor_init_default_params(struct msm_sensor_ctrl_t *s_ctrl)
 					sensor_mount_angle / 90) << 8);
 	s_ctrl->msm_sd.sd.entity.flags = mount_pos | MEDIA_ENT_FL_DEFAULT;
 
+	/* optimize camera print mipi packet and frame count log*/
+	INIT_DELAYED_WORK(&s_ctrl->frm_cnt_work, read_framecount_work_handler);
 	return 0;
 }

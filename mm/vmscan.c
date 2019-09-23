@@ -46,7 +46,6 @@
 #include <linux/oom.h>
 #include <linux/prefetch.h>
 #include <linux/printk.h>
-#include <linux/debugfs.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -58,7 +57,9 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
-
+#ifdef CONFIG_SHRINK_MEMORY
+#include <linux/suspend.h>
+#endif
 struct scan_control {
 	/* How many pages shrink_list() should reclaim */
 	unsigned long nr_to_reclaim;
@@ -200,39 +201,6 @@ static unsigned long get_lru_size(struct lruvec *lruvec, enum lru_list lru)
 	return zone_page_state(lruvec_zone(lruvec), NR_LRU_BASE + lru);
 }
 
-struct dentry *debug_file;
-
-static int debug_shrinker_show(struct seq_file *s, void *unused)
-{
-	struct shrinker *shrinker;
-	struct shrink_control sc;
-
-	sc.gfp_mask = -1;
-	sc.nr_to_scan = 0;
-
-	down_read(&shrinker_rwsem);
-	list_for_each_entry(shrinker, &shrinker_list, list) {
-		int num_objs;
-
-		num_objs = shrinker->count_objects(shrinker, &sc);
-		seq_printf(s, "%pf %d\n", shrinker->scan_objects, num_objs);
-	}
-	up_read(&shrinker_rwsem);
-	return 0;
-}
-
-static int debug_shrinker_open(struct inode *inode, struct file *file)
-{
-        return single_open(file, debug_shrinker_show, inode->i_private);
-}
-
-static const struct file_operations debug_shrinker_fops = {
-        .open = debug_shrinker_open,
-        .read = seq_read,
-        .llseek = seq_lseek,
-        .release = single_release,
-};
-
 /*
  * Add a shrinker callback to be called from the vm.
  */
@@ -261,15 +229,6 @@ int register_shrinker(struct shrinker *shrinker)
 	return 0;
 }
 EXPORT_SYMBOL(register_shrinker);
-
-static int __init add_shrinker_debug(void)
-{
-	debugfs_create_file("shrinker", 0644, NULL, NULL,
-			    &debug_shrinker_fops);
-	return 0;
-}
-
-late_initcall(add_shrinker_debug);
 
 /*
  * Remove one
@@ -3528,7 +3487,7 @@ void wakeup_kswapd(struct zone *zone, int order, enum zone_type classzone_idx)
 	wake_up_interruptible(&pgdat->kswapd_wait);
 }
 
-#ifdef CONFIG_HIBERNATION
+#if defined (CONFIG_HIBERNATION) || defined (CONFIG_SHRINK_MEMORY)
 /*
  * Try to free `nr_to_reclaim' of memory, system-wide, and return the number of
  * freed pages.
@@ -3552,7 +3511,13 @@ unsigned long shrink_all_memory(unsigned long nr_to_reclaim)
 	struct zonelist *zonelist = node_zonelist(numa_node_id(), sc.gfp_mask);
 	struct task_struct *p = current;
 	unsigned long nr_reclaimed;
-
+	if (system_entering_hibernation())
+		sc.hibernation_mode = 1;
+	else {
+		sc.hibernation_mode = 0;
+		sc.may_writepage = 0;
+		sc.may_swap = 0;
+	}
 	p->flags |= PF_MEMALLOC;
 	lockdep_set_current_reclaim_state(sc.gfp_mask);
 	reclaim_state.reclaimed_slab = 0;
@@ -3567,6 +3532,26 @@ unsigned long shrink_all_memory(unsigned long nr_to_reclaim)
 	return nr_reclaimed;
 }
 #endif /* CONFIG_HIBERNATION */
+#ifdef CONFIG_SHRINK_MEMORY
+int sysctl_shrink_memory;
+#define DEFAULT_FREE_RATIO 30
+int sysctl_shrinkmem_handler(struct ctl_table *table, int write,
+							 void __user *buffer, size_t *length, loff_t *ppos)
+{
+	int ret;
+	ret = proc_dointvec_minmax(table,write,buffer,length,ppos);
+	if (ret)
+		return ret;
+	if (write) {
+		int free_ratio = sysctl_shrink_memory;
+		if (sysctl_shrink_memory == 1)
+			free_ratio = DEFAULT_FREE_RATIO;
+
+		shrink_all_memory(totalram_pages*free_ratio/100);
+	}
+	return 0;
+}
+#endif
 
 /* It's optimal to keep kswapds on the same CPUs as their memory, but
    not required for correctness.  So if the last cpu in a node goes
@@ -3608,10 +3593,7 @@ static int set_kswapd_cpu_mask(pg_data_t *pgdat)
 	return set_cpus_allowed_ptr(pgdat->kswapd, &tmask);
 }
 
-/*
- * This kswapd start function will be called by init and node-hot-add.
- * On node-hot-add, kswapd will moved to proper cpus if cpus are hot-added.
- */
+
 int kswapd_run(int nid)
 {
 	pg_data_t *pgdat = NODE_DATA(nid);
@@ -3770,6 +3752,7 @@ static int __zone_reclaim(struct zone *zone, gfp_t gfp_mask, unsigned int order)
 	lockdep_set_current_reclaim_state(gfp_mask);
 	reclaim_state.reclaimed_slab = 0;
 	p->reclaim_state = &reclaim_state;
+
 
 	if (zone_pagecache_reclaimable(zone) > zone->min_unmapped_pages) {
 		/*

@@ -1,15 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- */
+
 
 #define pr_fmt(fmt)	"%s: " fmt, __func__
 
@@ -1088,12 +1077,7 @@ static void mdss_mdp_perf_calc_mixer(struct mdss_mdp_mixer *mixer,
 		bitmap_or(perf->bw_vote_mode, perf->bw_vote_mode,
 			tmp.bw_vote_mode, MDSS_MDP_BW_MODE_MAX);
 
-		/*
-		 * for async layers, the overlap calculation is skipped
-		 * and the bandwidth is added at the end, accounting for
-		 * worst case, that async layer might overlap with
-		 * all the other layers.
-		 */
+		
 		if (pipe->async_update) {
 			bw_overlap[i] = 0;
 			v_region[2*i] = 0;
@@ -4056,8 +4040,8 @@ void mdss_mdp_set_roi(struct mdss_mdp_ctl *ctl,
 		struct mdss_mdp_ctl *sctl = mdss_mdp_get_split_ctl(ctl);
 
 		if (sctl && sctl->mixer_left) {
-				mdss_mdp_set_mixer_roi(sctl->mixer_left, r_roi);
-				sctl->roi = sctl->mixer_left->roi;
+			mdss_mdp_set_mixer_roi(sctl->mixer_left, r_roi);
+			sctl->roi = sctl->mixer_left->roi;
 		}
 	} else if (is_dual_lm_single_display(ctl->mfd) && ctl->mixer_right) {
 

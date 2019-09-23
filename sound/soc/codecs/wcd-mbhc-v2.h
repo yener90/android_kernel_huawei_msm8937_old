@@ -428,6 +428,9 @@ struct wcd_mbhc {
 	struct mutex hphr_pa_lock;
 
 	unsigned long intr_status;
+
+	/* Delayed work to report vol+ press for camera */
+	struct delayed_work btn_take_pic_dwork;
 };
 #define WCD_MBHC_CAL_SIZE(buttons, rload) ( \
 	sizeof(struct wcd_mbhc_general_cfg) + \
@@ -526,4 +529,5 @@ static inline void wcd_mbhc_deinit(struct wcd_mbhc *mbhc)
 }
 #endif
 
+extern void msm8x16_wcd_codec_set_headset_state(u32 state);
 #endif /* __WCD_MBHC_V2_H__ */

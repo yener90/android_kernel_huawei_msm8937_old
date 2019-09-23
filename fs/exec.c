@@ -66,6 +66,10 @@
 
 #include <trace/events/sched.h>
 
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+#include <huawei_platform/power/msgnotify.h>
+#endif
+
 int suid_dumpable = 0;
 
 static LIST_HEAD(formats);
@@ -1045,13 +1049,16 @@ EXPORT_SYMBOL_GPL(get_task_comm);
  * so that a new one can be started
  */
 
-void __set_task_comm(struct task_struct *tsk, const char *buf, bool exec)
+void set_task_comm(struct task_struct *tsk,  char *buf)
 {
 	task_lock(tsk);
 	trace_task_rename(tsk, buf);
 	strlcpy(tsk->comm, buf, sizeof(tsk->comm));
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+	set_main_looper_thread(tsk,buf);
+#endif
 	task_unlock(tsk);
-	perf_event_comm(tsk, exec);
+	perf_event_comm(tsk);
 }
 
 int flush_old_exec(struct linux_binprm * bprm)
@@ -1067,6 +1074,8 @@ int flush_old_exec(struct linux_binprm * bprm)
 		goto out;
 
 	set_mm_exe_file(bprm->mm, bprm->file);
+
+
 	/*
 	 * Release all of the old mmap stuff
 	 */
@@ -1110,7 +1119,7 @@ void setup_new_exec(struct linux_binprm * bprm)
 		set_dumpable(current->mm, suid_dumpable);
 
 	perf_event_exec();
-	__set_task_comm(current, kbasename(bprm->filename), true);
+	set_task_comm(current, (char *)kbasename(bprm->filename));
 
 	/* Set the new mm task size. We have to do that late because it may
 	 * depend on TIF_32BIT which is only updated in flush_thread() on

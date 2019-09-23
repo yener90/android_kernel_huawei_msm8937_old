@@ -280,6 +280,14 @@ struct lcd_panel_info {
 	u32 xres_pad;
 	/* Pad height */
 	u32 yres_pad;
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	/*set the max backlight level for automatic algorithm in framework*/
+	u32 bl_level_max;
+	/*set the min backlight level for automatic algorithm in framework*/
+	u32 bl_level_min;
+	/*set the lcd type for app*/
+	char lcdtype[20];
+#endif
 };
 
 
@@ -555,6 +563,9 @@ struct mdss_panel_info {
 	u32 brightness_max;
 	u32 bl_max;
 	u32 bl_min;
+	u32 bl_half;
+	u32 bl_target;
+	u32 read_byte;
 	u32 fb_num;
 	u64 clk_rate;
 	u32 clk_min;
@@ -609,7 +620,10 @@ struct mdss_panel_info {
 	struct ion_handle *splash_ihdl;
 	int panel_power_state;
 	int compression_mode;
-
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	u32 inversion_mode;
+	bool panel_down_reset;
+#endif
 	uint32_t panel_dead;
 	u32 panel_force_dead;
 	u32 panel_orientation;
@@ -735,6 +749,12 @@ struct mdss_panel_data {
 
 	struct device_node *cfg_np; /* NULL if config node is not present */
 	struct mdss_panel_data *next;
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	int (*set_inversion_mode)(struct mdss_panel_data *pdata,u32 imode);
+	int (*check_panel_status)(struct mdss_panel_data *pdata);
+	int (*panel_frame_checksum)(struct mdss_panel_data *pdata);
+	struct mutex LCD_checksum_lock;
+#endif
 };
 
 struct mdss_panel_debugfs_info {

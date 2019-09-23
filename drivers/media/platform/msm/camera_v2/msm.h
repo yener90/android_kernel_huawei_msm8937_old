@@ -138,4 +138,5 @@ long msm_copy_camera_private_ioctl_args(unsigned long arg,
 	struct msm_camera_private_ioctl_arg *k_ioctl,
 	void __user **tmp_compat_ioctl_ptr);
 #endif
+void msm_sd_get_subdevs(struct v4l2_subdev *subdev_s[], int max_num, const char *name);
 #endif /*_MSM_H */

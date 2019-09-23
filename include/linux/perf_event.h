@@ -233,14 +233,7 @@ struct pmu {
 	 */
 	void (*read)			(struct perf_event *event);
 
-	/*
-	 * Group events scheduling is treated as a transaction, add
-	 * group events as a whole and perform one schedulability test.
-	 * If the test fails, roll back the whole group
-	 *
-	 * Start the transaction, after this ->add() doesn't need to
-	 * do schedulability tests.
-	 */
+	
 	void (*start_txn)		(struct pmu *pmu); /* optional */
 	/*
 	 * If ->start_txn() disabled the ->add() schedulability test
@@ -723,7 +716,7 @@ extern int perf_register_guest_info_callbacks(struct perf_guest_info_callbacks *
 extern int perf_unregister_guest_info_callbacks(struct perf_guest_info_callbacks *callbacks);
 
 extern void perf_event_exec(void);
-extern void perf_event_comm(struct task_struct *tsk, bool exec);
+extern void perf_event_comm(struct task_struct *tsk);
 extern void perf_event_fork(struct task_struct *tsk);
 
 /* Callchains */
@@ -752,11 +745,6 @@ extern int perf_cpu_time_max_percent_handler(struct ctl_table *table, int write,
 		void __user *buffer, size_t *lenp,
 		loff_t *ppos);
 
-
-static inline bool perf_paranoid_any(void)
-{
-	return sysctl_perf_event_paranoid > 2;
-}
 
 static inline bool perf_paranoid_tracepoint_raw(void)
 {

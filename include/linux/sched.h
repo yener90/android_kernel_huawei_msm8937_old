@@ -1292,6 +1292,13 @@ enum perf_event_task_context {
 	perf_nr_task_contexts,
 };
 
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+struct msg_stat {
+	bool main_looper_thread;
+	struct timespec sched_time;
+};
+#endif
+
 struct task_struct {
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
 	void *stack;
@@ -1602,6 +1609,10 @@ struct task_struct {
 	/* cg_list protected by css_set_lock and tsk->alloc_lock */
 	struct list_head cg_list;
 #endif
+#ifdef CONFIG_CGROUP_PIDS
+	struct list_head group_pids_list;
+	struct group_pids *group_pids;
+#endif
 #ifdef CONFIG_FUTEX
 	struct robust_list_head __user *robust_list;
 #ifdef CONFIG_COMPAT
@@ -1743,6 +1754,9 @@ struct task_struct {
 #if defined(CONFIG_BCACHE) || defined(CONFIG_BCACHE_MODULE)
 	unsigned int	sequential_io;
 	unsigned int	sequential_io_avg;
+#endif
+#ifdef CONFIG_HUAWEI_MSG_POLICY
+	struct msg_stat ms;
 #endif
 };
 
@@ -2633,11 +2647,7 @@ extern long do_fork(unsigned long, unsigned long, unsigned long, int __user *, i
 struct task_struct *fork_idle(int);
 extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 
-extern void __set_task_comm(struct task_struct *tsk, const char *from, bool exec);
-static inline void set_task_comm(struct task_struct *tsk, const char *from)
-{
-	__set_task_comm(tsk, from, false);
-}
+extern void set_task_comm(struct task_struct *tsk,  char *from);
 extern char *get_task_comm(char *to, struct task_struct *tsk);
 
 #ifdef CONFIG_SMP

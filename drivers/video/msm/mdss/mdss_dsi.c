@@ -34,6 +34,12 @@
 #include "mdss_dsi_phy.h"
 #include "mdss_dba_utils.h"
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+#include <linux/hw_lcd_common.h>
+bool enable_PT_test = 0;
+module_param_named(enable_PT_test, enable_PT_test, bool, S_IRUGO | S_IWUSR);
+#endif
+
 #define XO_CLK_RATE	19200000
 #define CMDLINE_DSI_CTL_NUM_STRING_LEN 2
 
@@ -42,7 +48,9 @@ static struct mdss_dsi_data *mdss_dsi_res;
 
 #define DSI_DISABLE_PC_LATENCY 100
 #define DSI_ENABLE_PC_LATENCY PM_QOS_DEFAULT_VALUE
-
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+struct mdss_panel_data *global_pdata = NULL;
+#endif
 static struct pm_qos_request mdss_dsi_pm_qos_request;
 
 static void mdss_dsi_pm_qos_add_request(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
@@ -272,6 +280,8 @@ static int mdss_dsi_regulator_init(struct platform_device *pdev,
 	return rc;
 }
 
+extern bool ft_gesture_onoff(void);
+extern bool synap_gesture_onoff(void);
 static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 {
 	int ret = 0;
@@ -282,26 +292,70 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 		ret = -EINVAL;
 		goto end;
 	}
+	pr_debug("%s, pdata->panel_info.panel_name = %s\n",__func__, pdata->panel_info.panel_name);
 
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
+	if(pdata->panel_info.panel_dead || (!synap_gesture_onoff() && strstr(pdata->panel_info.panel_name, "TD4100") != NULL)
+		 || (!ft_gesture_onoff() && strstr(pdata->panel_info.panel_name, "FT8607") != NULL))// esd or gestrue off need hardware reset
+	{
 
-	ret = mdss_dsi_panel_reset(pdata, 0);
-	if (ret) {
-		pr_warn("%s: Panel reset failed. rc=%d\n", __func__, ret);
-		ret = 0;
+		if(strstr(pdata->panel_info.panel_name, "TD4100") != NULL){
+
+			pr_debug("mdss_dsi_panel_power_off: VSPVSN --> RESET\n");
+
+			ret = msm_dss_enable_vreg(
+				ctrl_pdata->panel_power_data.vreg_config,
+				ctrl_pdata->panel_power_data.num_vreg, 0);	//while ESD occured ,power off VSP/VSN.modify,caofeng.wt
+			if (ret)
+				pr_err("%s: failed to disable vregs for %s\n",
+					__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+
+			if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
+				pr_debug("reset disable: pinctrl not enabled\n");
+
+			msleep(10);
+
+			ret = mdss_dsi_panel_reset(pdata, 0);//while ESD occured ,keep low reset.modify,caofeng.wt
+			if (ret) {
+				pr_warn("%s: Panel reset failed. rc=%d\n", __func__, ret);
+				ret = 0;
+			}
+
+		}else{
+
+			pr_debug("mdss_dsi_panel_power_off: RESET --> VSPVSN\n");
+
+#if 0 // for power consume need to keep reset pin high
+			ret = mdss_dsi_panel_reset(pdata, 0);
+			if (ret) {
+				pr_warn("%s: Panel reset failed. rc=%d\n", __func__, ret);
+				ret = 0;
+			}
+#endif
+
+			if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
+				pr_debug("reset disable: pinctrl not enabled\n");
+
+			ret = msm_dss_enable_vreg(
+				ctrl_pdata->panel_power_data.vreg_config,
+				ctrl_pdata->panel_power_data.num_vreg, 0);
+			if (ret)
+				pr_err("%s: failed to disable vregs for %s\n",
+					__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+
+		}
 	}
-
-	if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
-		pr_debug("reset disable: pinctrl not enabled\n");
-
-	ret = msm_dss_enable_vreg(
-		ctrl_pdata->panel_power_data.vreg_config,
-		ctrl_pdata->panel_power_data.num_vreg, 0);
-	if (ret)
-		pr_err("%s: failed to disable vregs for %s\n",
-			__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
-
+	else
+	{
+		pr_debug("mdss_dsi_panel_power_off: Don't PULL VSN VSP and RESET\n");	
+		//only reset the panel without VSP,VSN pull down
+		//ret =  mdss_dsi_panel_reset(pdata, 0);
+		//	if (ret) {
+		//		pr_warn("%s: Panel reset failed. rc=%d\n", __func__, ret);
+		//		ret = 0;
+		//	}
+	}
 end:
 	return ret;
 }
@@ -319,25 +373,31 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
-	ret = msm_dss_enable_vreg(
-		ctrl_pdata->panel_power_data.vreg_config,
-		ctrl_pdata->panel_power_data.num_vreg, 1);
-	if (ret) {
-		pr_err("%s: failed to enable vregs for %s\n",
-			__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
-		return ret;
+	if(pdata->panel_info.panel_dead || (!synap_gesture_onoff() ))// esd or gestrue off need hardware reset
+	{
+		ret = msm_dss_enable_vreg(
+			ctrl_pdata->panel_power_data.vreg_config,
+			ctrl_pdata->panel_power_data.num_vreg, 1);
+		if (ret) {
+			pr_err("%s: failed to enable vregs for %s\n",
+				__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+			return ret;
+		}
+
+		if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
+				pr_debug("reset enable: pinctrl not enabled\n");		
+
 	}
 
-	/*
-	 * If continuous splash screen feature is enabled, then we need to
-	 * request all the GPIOs that have already been configured in the
-	 * bootloader. This needs to be done irresepective of whether
-	 * the lp11_init flag is set or not.
-	 */
-	if (pdata->panel_info.cont_splash_enabled ||
-		!pdata->panel_info.mipi.lp11_init) {
-		if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
-			pr_debug("reset enable: pinctrl not enabled\n");
+		/*
+		 * If continuous splash screen feature is enabled, then we need to
+		 * request all the GPIOs that have already been configured in the
+		 * bootloader. This needs to be done irresepective of whether
+		 * the lp11_init flag is set or not.
+		 */
+		if (pdata->panel_info.cont_splash_enabled ||
+			!pdata->panel_info.mipi.lp11_init) {
+
 
 		ret = mdss_dsi_panel_reset(pdata, 1);
 		if (ret)
@@ -1124,6 +1184,7 @@ static int mdss_dsi_off(struct mdss_panel_data *pdata, int power_state)
 		return -EINVAL;
 	}
 
+
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
@@ -1300,6 +1361,9 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	int cur_power_state;
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	unsigned long timeout = jiffies;
+#endif
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
@@ -1373,6 +1437,10 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 	mdss_dsi_clk_ctrl(ctrl_pdata, ctrl_pdata->dsi_clk_handle,
 			  MDSS_DSI_LINK_CLK, MDSS_DSI_CLK_ON);
 	mdss_dsi_sw_reset(ctrl_pdata, true);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	LCD_LOG_INFO("%s: dsi_on_time = %u\n",
+			__func__,jiffies_to_msecs(jiffies-timeout));
+#endif
 
 	/*
 	 * Issue hardware reset line after enabling the DSI clocks and data
@@ -1383,6 +1451,7 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 			pr_debug("reset enable: pinctrl not enabled\n");
 		mdss_dsi_panel_reset(pdata, 1);
 	}
+
 
 	if (mipi->init_delay)
 		usleep_range(mipi->init_delay, mipi->init_delay);
@@ -3021,6 +3090,13 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 	struct device_node *dsi_pan_node = NULL;
 	const char *ctrl_name;
 	struct mdss_util_intf *util;
+#ifdef CONFIG_HUAWEI_DSM
+	struct dsm_dev dsm_lcd = {
+		.name = "dsm_lcd",
+		.fops = NULL,
+		.buff_size = 1024,
+	};
+#endif
 
 	if (!pdev || !pdev->dev.of_node) {
 		pr_err("%s: pdev not found for DSI controller\n", __func__);
@@ -3108,6 +3184,12 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 		pr_err("%s: dsi panel dev reg failed\n", __func__);
 		goto error_pan_node;
 	}
+
+#ifdef CONFIG_HUAWEI_DSM
+	if (!lcd_dclient) {
+		lcd_dclient = dsm_register_client(&dsm_lcd);
+	}
+#endif
 
 	pinfo = &(ctrl_pdata->panel_data.panel_info);
 	if (!(mdss_dsi_is_hw_config_split(ctrl_pdata->shared_data) &&
@@ -3963,7 +4045,9 @@ int dsi_panel_device_register(struct platform_device *ctrl_pdev,
 	u64 clk_rate;
 
 	mipi  = &(pinfo->mipi);
-
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	global_pdata = &(ctrl_pdata->panel_data);
+#endif
 	pinfo->type =
 		((mipi->mode == DSI_VIDEO_MODE)
 			? MIPI_VIDEO_PANEL : MIPI_CMD_PANEL);

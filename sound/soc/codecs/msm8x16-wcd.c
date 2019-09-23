@@ -33,6 +33,7 @@
 #include <linux/workqueue.h>
 #include <linux/sched.h>
 #include <sound/q6afe-v2.h>
+#include <linux/switch.h>     //add for headset state port
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
@@ -45,6 +46,7 @@
 #include "msm8916-wcd-irq.h"
 #include "msm8x16_wcd_registers.h"
 
+#include <sound/hw_audio_info.h>
 #define MSM8X16_WCD_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |\
 			SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_48000)
 #define MSM8X16_WCD_FORMATS (SNDRV_PCM_FMTBIT_S16_LE |\
@@ -132,6 +134,8 @@ static const DECLARE_TLV_DB_SCALE(digital_gain, 0, 1, 0);
 static const DECLARE_TLV_DB_SCALE(analog_gain, 0, 25, 1);
 static struct snd_soc_dai_driver msm8x16_wcd_i2s_dai[];
 /* By default enable the internal speaker boost */
+static struct switch_dev accdet_data;
+static int accdet_state = 0;
 static bool spkr_boost_en = true;
 
 #define MSM8X16_WCD_ACQUIRE_LOCK(x) \
@@ -311,6 +315,8 @@ struct msm8x16_wcd_spmi msm8x16_wcd_modules[MAX_MSM8X16_WCD_DEVICE];
 static void *adsp_state_notifier;
 
 static struct snd_soc_codec *registered_codec;
+
+extern void hw_get_registered_codec(struct snd_soc_codec *codec);
 
 static int get_codec_version(struct msm8x16_wcd_priv *msm8x16_wcd)
 {
@@ -1161,6 +1167,13 @@ static int __msm8x16_wcd_reg_read(struct snd_soc_codec *codec,
 	pr_debug("%s reg = %x\n", __func__, reg);
 	mutex_lock(&msm8x16_wcd->io_lock);
 	pdata = snd_soc_card_get_drvdata(codec->component.card);
+
+	if (!pdata) {
+		dev_err(msm8x16_wcd->dev, "card not registered!\n");
+		mutex_unlock(&msm8x16_wcd->io_lock);
+		return -EINVAL;
+	}
+
 	if (MSM8X16_WCD_IS_TOMBAK_REG(reg))
 		ret = msm8x16_wcd_spmi_read(reg, 1, &temp);
 	else if (MSM8X16_WCD_IS_DIGITAL_REG(reg)) {
@@ -4307,6 +4320,17 @@ static int msm8x16_wcd_hphr_dac_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+void msm8x16_wcd_codec_set_headset_state(u32 state)
+{
+	switch_set_state((struct switch_dev *)&accdet_data, state);
+	accdet_state = state;
+}
+
+int msm8x16_wcd_codec_get_headset_state(void)
+{
+	pr_debug("%s accdet_state = %d\n", __func__, accdet_state);
+	return accdet_state;
+}
 static int msm8x16_wcd_hph_pa_event(struct snd_soc_dapm_widget *w,
 			      struct snd_kcontrol *kcontrol, int event)
 {
@@ -5610,6 +5634,7 @@ static int adsp_state_callback(struct notifier_block *nb, unsigned long value,
 	bool timedout;
 	unsigned long timeout;
 
+	audio_dsm_report_num(DSM_AUDIO_MODEM_CRASH_CODEC_CALLBACK, DSM_AUDIO_MESG_MODEM_CALLBACK);
 	if (value == SUBSYS_BEFORE_SHUTDOWN)
 		msm8x16_wcd_device_down(registered_codec);
 	else if (value == SUBSYS_AFTER_POWERUP) {
@@ -5738,11 +5763,15 @@ static int msm8x16_wcd_codec_probe(struct snd_soc_codec *codec)
 	struct msm8x16_wcd_pdata *pdata;
 	int i, ret;
 
+	audio_dsm_register();
 	dev_dbg(codec->dev, "%s()\n", __func__);
 
 	msm8x16_wcd_priv = kzalloc(sizeof(struct msm8x16_wcd_priv), GFP_KERNEL);
-	if (!msm8x16_wcd_priv)
+	if (!msm8x16_wcd_priv) {
+		audio_dsm_report_num(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
+								DSM_AUDIO_MESG_ALLOC_MEM_FAIL);
 		return -ENOMEM;
+	}
 
 	for (i = 0; i < NUM_DECIMATORS; i++) {
 		tx_hpf_work[i].msm8x16_wcd = msm8x16_wcd_priv;
@@ -5761,6 +5790,8 @@ static int msm8x16_wcd_codec_probe(struct snd_soc_codec *codec)
 	msm8x16_wcd->dig_base = ioremap(pdata->dig_cdc_addr,
 			MSM8X16_DIGITAL_CODEC_REG_SIZE);
 	if (msm8x16_wcd->dig_base == NULL) {
+		audio_dsm_report_num(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
+								DSM_AUDIO_MESG_IOREMAP_FAIL);
 		dev_err(codec->dev, "%s ioremap failed\n", __func__);
 		kfree(msm8x16_wcd_priv);
 		return -ENOMEM;
@@ -5850,6 +5881,17 @@ static int msm8x16_wcd_codec_probe(struct snd_soc_codec *codec)
 
 	wcd_mbhc_init(&msm8x16_wcd_priv->mbhc, codec, &mbhc_cb, &intr_ids,
 		      wcd_mbhc_registers, true);
+  //add headset state h2w/state
+	accdet_data.name = "h2w";
+	accdet_data.index = 0;
+	accdet_data.state = 0;
+
+	ret = switch_dev_register(&accdet_data);
+	if(ret)
+	{
+		dev_err(codec->dev, "%s: Failed to register h2w\n", __func__);
+		return -ENOMEM;
+	}
 
 	msm8x16_wcd_priv->mclk_enabled = false;
 	msm8x16_wcd_priv->clock_active = false;
@@ -5866,10 +5908,13 @@ static int msm8x16_wcd_codec_probe(struct snd_soc_codec *codec)
 	/* Set initial cap mode */
 	msm8x16_wcd_configure_cap(codec, false, false);
 	registered_codec = codec;
+	hw_get_registered_codec(registered_codec);
 	adsp_state_notifier =
 	    subsys_notif_register_notifier("adsp",
 					   &adsp_state_notifier_block);
 	if (!adsp_state_notifier) {
+		audio_dsm_report_num(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
+								DSM_AUDIO_MESG_MEDOM_REGIST_FAIL);
 		dev_err(codec->dev, "Failed to register adsp state notifier\n");
 		iounmap(msm8x16_wcd->dig_base);
 		kfree(msm8x16_wcd_priv->fw_data);
@@ -6156,12 +6201,19 @@ static int msm8x16_wcd_spmi_probe(struct spmi_device *spmi)
 	struct resource *wcd_resource;
 	int adsp_state;
 	static int spmi_dev_registered_cnt;
+	struct timespec ts = {0, 0};
+	audio_dsm_register();
 
 	dev_dbg(&spmi->dev, "%s(%d):slave ID = 0x%x\n",
 		__func__, __LINE__,  spmi->sid);
 
 	adsp_state = apr_get_subsys_state();
 	if (adsp_state != APR_SUBSYS_LOADED) {
+		get_monotonic_boottime(&ts);
+		if (ts.tv_sec >= DSM_REPORT_DELAY_TIME) {
+			audio_dsm_report_num(DSM_AUDIO_ADSP_SETUP_FAIL_ERROR_NO,
+									DSM_AUDIO_MESG_MEDOM_LOAD_FAIL);
+		}
 		dev_dbg(&spmi->dev, "Adsp is not loaded yet %d\n",
 				adsp_state);
 		return -EPROBE_DEFER;
@@ -6169,6 +6221,8 @@ static int msm8x16_wcd_spmi_probe(struct spmi_device *spmi)
 
 	wcd_resource = spmi_get_resource(spmi, NULL, IORESOURCE_MEM, 0);
 	if (!wcd_resource) {
+		audio_dsm_report_num(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
+								DSM_AUDIO_MESG_SPMI_GET_FAIL);
 		dev_err(&spmi->dev, "Unable to get Tombak base address\n");
 		return -ENXIO;
 	}
@@ -6279,6 +6333,13 @@ err_supplies:
 err_codec:
 	kfree(msm8x16);
 rtn:
+	if (-EPROBE_DEFER != ret) {
+		get_monotonic_boottime(&ts);
+		if (ts.tv_sec >= DSM_REPORT_DELAY_TIME) {
+			audio_dsm_report_info(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
+				"%s ret = %d, time = %d", __func__, ret, ts.tv_sec);
+		}
+	}
 	return ret;
 }
 

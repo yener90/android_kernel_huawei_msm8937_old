@@ -213,6 +213,8 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(charge_enabled),
 	POWER_SUPPLY_ATTR(battery_charging_enabled),
 	POWER_SUPPLY_ATTR(charging_enabled),
+	POWER_SUPPLY_ATTR(StopCharging_Test),
+	POWER_SUPPLY_ATTR(StartCharging_Test),
 	POWER_SUPPLY_ATTR(input_voltage_regulation),
 	POWER_SUPPLY_ATTR(input_current_max),
 	POWER_SUPPLY_ATTR(input_current_trim),
@@ -245,6 +247,12 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(restricted_charging),
 	POWER_SUPPLY_ATTR(current_capability),
 	POWER_SUPPLY_ATTR(typec_mode),
+	POWER_SUPPLY_ATTR(profile_status),
+	POWER_SUPPLY_ATTR(release_wakelock),
+	POWER_SUPPLY_ATTR(in_thermal),
+	POWER_SUPPLY_ATTR(charger_ovp),
+	POWER_SUPPLY_ATTR(register_head),
+	POWER_SUPPLY_ATTR(dump_register),
 	POWER_SUPPLY_ATTR(allow_hvdcp3),
 	POWER_SUPPLY_ATTR(ignore_false_negative_isense),
 	POWER_SUPPLY_ATTR(enable_jeita_detection),
@@ -354,6 +362,11 @@ int power_supply_uevent(struct device *dev, struct kobj_uevent_env *env)
 		char *line;
 
 		attr = &power_supply_attrs[psy->properties[j]];
+
+		if( (psy->properties[j] == POWER_SUPPLY_PROP_STOPCHARGING)
+			||  (psy->properties[j] == POWER_SUPPLY_PROP_STARTCHARGING) ) {
+			continue;
+		}
 
 		ret = power_supply_show_property(dev, attr, prop_buf);
 		if (ret == -ENODEV || ret == -ENODATA) {

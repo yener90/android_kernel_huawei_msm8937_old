@@ -1051,7 +1051,41 @@ static void *new_read(struct dm_bufio_client *c, sector_t block,
 
 	return b->data;
 }
+static void *new_readback(struct dm_bufio_client *c, sector_t block,
+		      enum new_flag nf, struct dm_buffer **bp)
+{
+	int need_submit;
+	struct dm_buffer *b;
 
+	LIST_HEAD(write_list);
+
+	dm_bufio_lock(c);
+	b = __bufio_new(c, block, nf, &need_submit, &write_list);
+
+	if (!b)
+		return b;
+
+	b->state = 1 << B_READING;
+	dm_bufio_unlock(c);
+
+	__flush_write_list(&write_list);
+
+	submit_io(b, READ, b->block, read_endio);
+
+	wait_on_bit_io(&b->state, B_READING, TASK_UNINTERRUPTIBLE);
+
+	if (b->read_error) {
+		int error = b->read_error;
+
+		dm_bufio_release(b);
+
+		return ERR_PTR(error);
+	}
+
+	*bp = b;
+
+	return b->data;
+}
 void *dm_bufio_get(struct dm_bufio_client *c, sector_t block,
 		   struct dm_buffer **bp)
 {
@@ -1067,7 +1101,14 @@ void *dm_bufio_read(struct dm_bufio_client *c, sector_t block,
 	return new_read(c, block, NF_READ, bp);
 }
 EXPORT_SYMBOL_GPL(dm_bufio_read);
+void *dm_bufio_readback(struct dm_bufio_client *c, sector_t block,
+		    struct dm_buffer **bp)
+{
+	BUG_ON(dm_bufio_in_request());
 
+	return new_readback(c, block, NF_READ, bp);
+}
+EXPORT_SYMBOL_GPL(dm_bufio_readback);
 void *dm_bufio_new(struct dm_bufio_client *c, sector_t block,
 		   struct dm_buffer **bp)
 {

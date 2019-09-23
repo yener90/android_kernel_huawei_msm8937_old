@@ -243,6 +243,15 @@ struct msm_mdp_interface {
 				out = (2 * (v) * (bl_max) + max_bright);\
 				do_div(out, 2 * max_bright);\
 				} while (0)
+#define MDSS_BRIGHT_TO_BL_HALF1(out, v, bl_max,bl_half, bl_target, max_bright) do {\
+				out = (2 * (bl_max - bl_target) * (v -bl_half) + (2 * bl_target + 1) * (max_bright - bl_half));\
+				do_div(out, 2 * (max_bright - bl_half));\
+				} while (0)
+
+#define MDSS_BRIGHT_TO_BL_HALF2(out, v,bl_max, bl_half, bl_target,max_bright) do {\
+				out = (2 * (bl_target) * (v) + bl_half);\
+				do_div(out, 2 * bl_half);\
+				} while (0)
 
 struct mdss_fb_file_info {
 	struct file *file;
@@ -350,6 +359,11 @@ struct msm_fb_data_type {
 
 	u32 wait_for_kickoff;
 	u32 thermal_level;
+
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	u32 frame_updated;
+	struct delayed_work bkl_work;
+#endif
 
 	int fb_mmap_type;
 	struct led_trigger *boot_notification_led;

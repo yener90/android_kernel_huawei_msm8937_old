@@ -233,13 +233,15 @@ static int verity_handle_err(struct dm_verity *v, enum verity_block_type type,
 out:
 	if (v->mode == DM_VERITY_MODE_LOGGING)
 		return 0;
-
-	if (v->mode == DM_VERITY_MODE_RESTART)
+	if (v->mode == DM_VERITY_MODE_RESTART) {
+		//panic("%s: %s block %llu is corrupted", v->data_dev->name,
+        //        type_str, block);
 		kernel_restart("dm-verity device corrupted");
+	}
 
 	return 1;
 }
-
+static void dump_buff(void *_buff, int len);
 /*
  * Verify hash of a metadata block pertaining to the specified data block
  * ("block" argument) at a specified level ("level" argument).
@@ -261,10 +263,12 @@ static int verity_verify_level(struct dm_verity_io *io, sector_t block,
 	int r;
 	sector_t hash_block;
 	unsigned offset;
+	unsigned retry_num = 0;
 
 	verity_hash_at_level(v, block, level, &hash_block, &offset);
 
 	data = dm_bufio_read(v->bufio, hash_block, &buf);
+retry:
 	if (unlikely(IS_ERR(data)))
 		return PTR_ERR(data);
 
@@ -317,6 +321,15 @@ static int verity_verify_level(struct dm_verity_io *io, sector_t block,
 			goto release_ret_r;
 		}
 		if (unlikely(memcmp(result, io_want_digest(v, io), v->digest_size))) {
+			DMERR_LIMIT("metadata block %llu is corrupted(%d)",
+				(unsigned long long)hash_block, retry_num);
+			if (retry_num++ < 3) {
+				data = dm_bufio_readback(v->bufio, hash_block,
+						&buf);
+				goto retry;
+			}
+			pr_err("========== dm-verity, metadata block %ld is corrupted. ============\n", (long)hash_block);
+			dump_buff(data, 4096);
 			v->hash_failed = 1;
 
 			if (verity_handle_err(v, DM_VERITY_BLOCK_TYPE_METADATA,
@@ -340,6 +353,19 @@ release_ret_r:
 
 	return r;
 }
+static void dump_buff(void *_buff, int len)
+{
+	unsigned *buff = _buff;
+	int i;
+
+	len /= 4;
+	for (i = 0; i < len; i++) {
+		printk("%08x ", buff[i]);
+		if ((i+1) % 4 == 0)
+			printk("\n");
+	}
+	printk("======== \n");
+}
 
 /*
  * Verify one "dm_verity_io" structure.
@@ -351,12 +377,15 @@ static int verity_verify_io(struct dm_verity_io *io)
 						   v->ti->per_bio_data_size);
 	unsigned b;
 	int i;
+	struct bio_vec bv_pre = bio_iter_iovec(bio, io->iter);
+	struct dm_buffer *buf = NULL;
 
 	for (b = 0; b < io->n_blocks; b++) {
 		struct shash_desc *desc;
-		u8 *result;
+		u8 *result, *data = NULL;
 		int r;
 		unsigned todo;
+		int retry_num = 0;
 
 		if (likely(v->levels)) {
 			/*
@@ -385,9 +414,12 @@ test_block_hash:
 		desc = io_hash_desc(v, io);
 		desc->tfm = v->tfm;
 		desc->flags = CRYPTO_TFM_REQ_MAY_SLEEP;
+retry:
 		r = crypto_shash_init(desc);
 		if (r < 0) {
 			DMERR("crypto_shash_init failed: %d", r);
+			if (buf)
+				dm_bufio_release(buf);
 			return r;
 		}
 
@@ -395,6 +427,8 @@ test_block_hash:
 			r = crypto_shash_update(desc, v->salt, v->salt_size);
 			if (r < 0) {
 				DMERR("crypto_shash_update failed: %d", r);
+				if (buf)
+					dm_bufio_release(buf);
 				return r;
 			}
 		}
@@ -403,20 +437,35 @@ test_block_hash:
 			u8 *page;
 			unsigned len;
 			struct bio_vec bv = bio_iter_iovec(bio, io->iter);
-
+			if (retry_num) {
+				bv = bv_pre;
+				data = dm_bufio_readback(v->bufio,
+					io->block + b, &buf);
+			}
 			page = kmap_atomic(bv.bv_page);
 			len = bv.bv_len;
 			if (likely(len >= todo))
 				len = todo;
-			r = crypto_shash_update(desc, page + bv.bv_offset, len);
+
+			if (!retry_num) {
+				data = page + bv.bv_offset;
+			} else {
+				memcpy(page, data, len);
+			}
+
+			r = crypto_shash_update(desc, data, len);
 			kunmap_atomic(page);
 
 			if (r < 0) {
 				DMERR("crypto_shash_update failed: %d", r);
+				if (buf)
+					dm_bufio_release(buf);
 				return r;
 			}
-
-			bio_advance_iter(bio, &io->iter, len);
+			if (!retry_num) {
+				bv_pre = bv;
+				bio_advance_iter(bio, &io->iter, len);
+			}
 			todo -= len;
 		} while (todo);
 
@@ -424,6 +473,8 @@ test_block_hash:
 			r = crypto_shash_update(desc, v->salt, v->salt_size);
 			if (r < 0) {
 				DMERR("crypto_shash_update failed: %d", r);
+				if (buf)
+					dm_bufio_release(buf);
 				return r;
 			}
 		}
@@ -432,16 +483,34 @@ test_block_hash:
 		r = crypto_shash_final(desc, result);
 		if (r < 0) {
 			DMERR("crypto_shash_final failed: %d", r);
+			if (buf)
+				dm_bufio_release(buf);
 			return r;
 		}
 		if (unlikely(memcmp(result, io_want_digest(v, io), v->digest_size))) {
+			DMERR_LIMIT("data block %llu is corrupted, retry no %d",
+				(unsigned long long)(io->block + b), retry_num);
+			if (retry_num++ < 3)
+				goto retry;
+
+			pr_err("=========== dm-verity, data corrupted, block %ld ===========\n", (long)(io->block + b));
+			dump_buff(data, 4096);
 			v->hash_failed = 1;
 
 			if (verity_handle_err(v, DM_VERITY_BLOCK_TYPE_DATA,
-					      io->block + b))
+					      io->block + b)) {
+				if (buf)
+					dm_bufio_release(buf);
 				return -EIO;
+			}
+		}
+		if (buf) {
+			dm_bufio_release(buf);
+			buf = NULL;
 		}
 	}
+	if (buf)
+		dm_bufio_release(buf);
 
 	return 0;
 }

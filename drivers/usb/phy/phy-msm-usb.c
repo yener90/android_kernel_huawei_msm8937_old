@@ -96,7 +96,7 @@ module_param(lpm_disconnect_thresh , uint, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(lpm_disconnect_thresh,
 	"Delay before entering LPM on USB disconnect");
 
-static bool floated_charger_enable;
+static bool floated_charger_enable = 1;
 module_param(floated_charger_enable , bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(floated_charger_enable,
 	"Whether to enable floated charger");
@@ -1487,11 +1487,13 @@ phcd_retry:
 	atomic_set(&motg->in_lpm, 1);
 
 	/* Enable ASYNC IRQ during LPM */
-	enable_irq(motg->async_irq);
+	if (host_bus_suspend ||device_bus_suspend) {
+		enable_irq(motg->async_irq);
+		enable_irq(motg->irq);
+	}
 	if (motg->phy_irq)
 		enable_irq(motg->phy_irq);
 
-	enable_irq(motg->irq);
 	wake_unlock(&motg->wlock);
 
 	dev_dbg(phy->dev, "LPM caps = %lu flags = %lu\n",
@@ -1535,7 +1537,8 @@ static int msm_otg_resume(struct msm_otg *motg)
 		return 0;
 	}
 
-	disable_irq(motg->irq);
+	if (motg->host_bus_suspend ||motg->device_bus_suspend)
+		disable_irq(motg->irq);
 	wake_lock(&motg->wlock);
 
 	/*
@@ -1664,7 +1667,8 @@ skip_phy_resume:
 	enable_irq(motg->irq);
 
 	/* Enable ASYNC_IRQ only during LPM */
-	disable_irq(motg->async_irq);
+	if (motg->host_bus_suspend ||motg->device_bus_suspend)
+		disable_irq(motg->async_irq);
 
 	if (motg->phy_irq_pending) {
 		motg->phy_irq_pending = false;
@@ -2745,6 +2749,42 @@ do_wait:
 	}
 }
 
+static int msm_chg_check_dcd_flchg(struct msm_otg *motg)
+{
+	struct usb_otg *otg = motg->phy.otg;
+	bool check_dcd;
+	int dcd_retries = 0;
+
+/* MSM PHY DCD support */
+#define CHG_DCD_POLL_TIME		120	/* 200 msec */
+#define CHG_DCD_MAX_RETRIES	10	/* Total dcd_tmout = 10 * 200 msec */
+
+	if (!floated_charger_enable)
+		return 1;
+	pm_runtime_get_sync(otg->phy->dev);
+	do {
+		msm_chg_block_on(motg);
+		msm_chg_enable_dcd(motg);
+		usleep_range(10000, 12000);
+		check_dcd = msm_chg_check_dcd(motg);
+		msm_chg_disable_dcd(motg);
+		msm_chg_block_off(motg);
+		msm_otg_dbg_log_event(&motg->phy, "FLCHG:",
+			check_dcd, motg->chg_type);
+		if (check_dcd) {
+			pm_runtime_mark_last_busy(otg->phy->dev);
+			pm_runtime_put_autosuspend(otg->phy->dev);
+			return 1;
+		}
+		msleep(CHG_DCD_POLL_TIME);
+		dcd_retries++;
+	} while (dcd_retries <= CHG_DCD_MAX_RETRIES);
+	pm_runtime_mark_last_busy(otg->phy->dev);
+	pm_runtime_put_autosuspend(otg->phy->dev);
+
+	return 0;
+}
+
 static void msm_otg_sm_work(struct work_struct *w)
 {
 	struct msm_otg *motg = container_of(w, struct msm_otg, sm_work);
@@ -2826,8 +2866,9 @@ static void msm_otg_sm_work(struct work_struct *w)
 							OTG_STATE_B_CHARGER;
 					break;
 				case USB_FLOATED_CHARGER:
+					pr_info("Charger was USB_FLOATED_CHARGER!");
 					msm_otg_notify_charger(motg,
-							IDEV_CHG_MAX);
+							FLOATED_CHG_MAX);
 					otg->phy->state = OTG_STATE_B_CHARGER;
 					break;
 				case USB_CDP_CHARGER:
@@ -2835,6 +2876,16 @@ static void msm_otg_sm_work(struct work_struct *w)
 							IDEV_CHG_MAX);
 					/* fall through */
 				case USB_SDP_CHARGER:
+					if (!msm_chg_check_dcd_flchg(motg)) {
+						motg->chg_type = USB_FLOATED_CHARGER;
+						work = 1;
+						break;
+					}
+					if (motg->chg_type == USB_SDP_CHARGER) {
+						msm_otg_notify_charger(motg,
+							500);
+					}
+
 					pm_runtime_get_sync(otg->phy->dev);
 					msm_otg_start_peripheral(otg, 1);
 					otg->phy->state =
