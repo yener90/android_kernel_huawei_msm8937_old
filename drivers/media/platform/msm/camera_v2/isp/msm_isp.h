@@ -777,6 +777,10 @@ struct vfe_device {
 	uint32_t irq_status0;
 	uint32_t irq_status1;
 	uint32_t ping_pong_status;
+
+	/* before halt irq info */
+	uint32_t recovery_irq0_mask;
+	uint32_t recovery_irq1_mask;
 };
 
 struct vfe_parent_device {
