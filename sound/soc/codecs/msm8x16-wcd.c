@@ -5634,7 +5634,6 @@ static int adsp_state_callback(struct notifier_block *nb, unsigned long value,
 	bool timedout;
 	unsigned long timeout;
 
-	audio_dsm_report_num(DSM_AUDIO_MODEM_CRASH_CODEC_CALLBACK, DSM_AUDIO_MESG_MODEM_CALLBACK);
 	if (value == SUBSYS_BEFORE_SHUTDOWN)
 		msm8x16_wcd_device_down(registered_codec);
 	else if (value == SUBSYS_AFTER_POWERUP) {
@@ -5763,15 +5762,11 @@ static int msm8x16_wcd_codec_probe(struct snd_soc_codec *codec)
 	struct msm8x16_wcd_pdata *pdata;
 	int i, ret;
 
-	audio_dsm_register();
 	dev_dbg(codec->dev, "%s()\n", __func__);
 
 	msm8x16_wcd_priv = kzalloc(sizeof(struct msm8x16_wcd_priv), GFP_KERNEL);
-	if (!msm8x16_wcd_priv) {
-		audio_dsm_report_num(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
-								DSM_AUDIO_MESG_ALLOC_MEM_FAIL);
+	if (!msm8x16_wcd_priv)
 		return -ENOMEM;
-	}
 
 	for (i = 0; i < NUM_DECIMATORS; i++) {
 		tx_hpf_work[i].msm8x16_wcd = msm8x16_wcd_priv;
@@ -5790,8 +5785,6 @@ static int msm8x16_wcd_codec_probe(struct snd_soc_codec *codec)
 	msm8x16_wcd->dig_base = ioremap(pdata->dig_cdc_addr,
 			MSM8X16_DIGITAL_CODEC_REG_SIZE);
 	if (msm8x16_wcd->dig_base == NULL) {
-		audio_dsm_report_num(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
-								DSM_AUDIO_MESG_IOREMAP_FAIL);
 		dev_err(codec->dev, "%s ioremap failed\n", __func__);
 		kfree(msm8x16_wcd_priv);
 		return -ENOMEM;
@@ -5913,8 +5906,6 @@ static int msm8x16_wcd_codec_probe(struct snd_soc_codec *codec)
 	    subsys_notif_register_notifier("adsp",
 					   &adsp_state_notifier_block);
 	if (!adsp_state_notifier) {
-		audio_dsm_report_num(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
-								DSM_AUDIO_MESG_MEDOM_REGIST_FAIL);
 		dev_err(codec->dev, "Failed to register adsp state notifier\n");
 		iounmap(msm8x16_wcd->dig_base);
 		kfree(msm8x16_wcd_priv->fw_data);
@@ -6201,19 +6192,12 @@ static int msm8x16_wcd_spmi_probe(struct spmi_device *spmi)
 	struct resource *wcd_resource;
 	int adsp_state;
 	static int spmi_dev_registered_cnt;
-	struct timespec ts = {0, 0};
-	audio_dsm_register();
 
 	dev_dbg(&spmi->dev, "%s(%d):slave ID = 0x%x\n",
 		__func__, __LINE__,  spmi->sid);
 
 	adsp_state = apr_get_subsys_state();
 	if (adsp_state != APR_SUBSYS_LOADED) {
-		get_monotonic_boottime(&ts);
-		if (ts.tv_sec >= DSM_REPORT_DELAY_TIME) {
-			audio_dsm_report_num(DSM_AUDIO_ADSP_SETUP_FAIL_ERROR_NO,
-									DSM_AUDIO_MESG_MEDOM_LOAD_FAIL);
-		}
 		dev_dbg(&spmi->dev, "Adsp is not loaded yet %d\n",
 				adsp_state);
 		return -EPROBE_DEFER;
@@ -6221,8 +6205,6 @@ static int msm8x16_wcd_spmi_probe(struct spmi_device *spmi)
 
 	wcd_resource = spmi_get_resource(spmi, NULL, IORESOURCE_MEM, 0);
 	if (!wcd_resource) {
-		audio_dsm_report_num(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
-								DSM_AUDIO_MESG_SPMI_GET_FAIL);
 		dev_err(&spmi->dev, "Unable to get Tombak base address\n");
 		return -ENXIO;
 	}
@@ -6333,13 +6315,6 @@ err_supplies:
 err_codec:
 	kfree(msm8x16);
 rtn:
-	if (-EPROBE_DEFER != ret) {
-		get_monotonic_boottime(&ts);
-		if (ts.tv_sec >= DSM_REPORT_DELAY_TIME) {
-			audio_dsm_report_info(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
-				"%s ret = %d, time = %d", __func__, ret, ts.tv_sec);
-		}
-	}
 	return ret;
 }
 

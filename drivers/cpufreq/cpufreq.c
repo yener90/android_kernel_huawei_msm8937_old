@@ -30,9 +30,6 @@
 #include <linux/tick.h>
 #include <trace/events/power.h>
 
-#ifdef CONFIG_HUAWEI_MSG_POLICY
-#include <huawei_platform/power/msgnotify.h>
-#endif
 /**
  * The "cpufreq driver" - the arch- or hardware-dependent low
  * level driver of CPUFreq support, and its spinlock. This lock
@@ -616,17 +613,12 @@ static ssize_t show_scaling_governor(struct cpufreq_policy *policy, char *buf)
 /**
  * store_scaling_governor - store policy for the specified CPU
  */
-extern bool cbt_mode;
-
 static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 					const char *buf, size_t count)
 {
 	int ret;
 	char	str_governor[16];
 	struct cpufreq_policy new_policy;
-
-	if (cbt_mode)
-		return 0;
 
 	ret = cpufreq_get_policy(&new_policy, policy->cpu);
 	if (ret)
@@ -744,29 +736,6 @@ static ssize_t show_scaling_setspeed(struct cpufreq_policy *policy, char *buf)
 	return policy->governor->show_setspeed(policy, buf);
 }
 
-#ifdef CONFIG_HUAWEI_MSG_POLICY
-static ssize_t store_msg_policy(struct cpufreq_policy *policy,
-					const char *buf, size_t count)
-{
-	unsigned int value = 0;
-	unsigned int ret;
-
-	ret = sscanf(buf, "%u", &value);
-	if (ret != 1)
-		return -EINVAL;
-
-	set_msg_threshold(value);
-
-	return count;
-}
-
-static ssize_t show_msg_policy(struct cpufreq_policy *policy, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "threshold:%u,max_msg_percent:%u\n",
-		get_msg_threshold(), get_max_msg_percent());
-}
-#endif
-
 /**
  * show_bios_limit - show the current cpufreq HW/BIOS limitation
  */
@@ -796,9 +765,6 @@ cpufreq_freq_attr_rw(scaling_min_freq);
 cpufreq_freq_attr_rw(scaling_max_freq);
 cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
-#ifdef CONFIG_HUAWEI_MSG_POLICY
-cpufreq_freq_attr_rw(msg_policy);
-#endif
 
 static struct attribute *default_attrs[] = {
 	&cpuinfo_min_freq.attr,
@@ -812,9 +778,6 @@ static struct attribute *default_attrs[] = {
 	&scaling_driver.attr,
 	&scaling_available_governors.attr,
 	&scaling_setspeed.attr,
-#ifdef CONFIG_HUAWEI_MSG_POLICY
-	&msg_policy.attr,
-#endif
 	NULL
 };
 
@@ -998,7 +961,6 @@ static int cpufreq_add_dev_interface(struct cpufreq_policy *policy,
 	return ret;
 }
 
-extern struct cpufreq_governor cpufreq_gov_powersave;
 static void cpufreq_init_policy(struct cpufreq_policy *policy)
 {
 	struct cpufreq_governor *gov = NULL;
@@ -1026,9 +988,6 @@ static void cpufreq_init_policy(struct cpufreq_policy *policy)
 				policy->governor->name, policy->cpu);
 	else
 		gov = CPUFREQ_DEFAULT_GOVERNOR;
-
-	if (cbt_mode)
-		gov = (&cpufreq_gov_powersave);
 
 	new_policy.governor = gov;
 
@@ -2426,9 +2385,6 @@ static int cpufreq_cpu_callback(struct notifier_block *nfb,
 		switch (action & ~CPU_TASKS_FROZEN) {
 		case CPU_ONLINE:
 			__cpufreq_add_dev(dev, NULL);
-#ifdef CONFIG_HUAWEI_KERNEL
-			kobject_uevent(&dev->kobj, KOBJ_ADD);
-#endif
 			break;
 
 		case CPU_DOWN_PREPARE:

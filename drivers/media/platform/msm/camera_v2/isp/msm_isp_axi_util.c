@@ -15,16 +15,8 @@
 #include "msm_isp_util.h"
 #include "msm_isp_axi_util.h"
 
-#ifdef CONFIG_HUAWEI_DSM
-#include "msm_camera_dsm.h"
-#endif
-
 #define HANDLE_TO_IDX(handle) (handle & 0xFF)
 #define ISP_SOF_DEBUG_COUNT 0
-
-#ifdef CONFIG_HUAWEI_DSM
-extern void camera_report_dsm_err_msm_isp(struct vfe_device *vfe_dev, int type, int err_num , const char* str);
-#endif
 
 static int msm_isp_update_dual_HW_ms_info_at_start(
 	struct vfe_device *vfe_dev,
@@ -1103,7 +1095,7 @@ void msm_isp_start_avtimer(void)
 	avcs_core_disable_power_collapse(1);
 }
 
-static inline void msm_isp_get_avtimer_ts(
+void msm_isp_get_avtimer_ts(
 		struct msm_isp_timestamp *time_stamp)
 {
 	int rc = 0;
@@ -1131,7 +1123,7 @@ void msm_isp_start_avtimer(void)
 	pr_err("AV Timer is not supported\n");
 }
 
-static inline void msm_isp_get_avtimer_ts(
+void msm_isp_get_avtimer_ts(
 		struct msm_isp_timestamp *time_stamp)
 {
 	pr_err_ratelimited("%s: Error: AVTimer driver not available\n",
@@ -2367,7 +2359,7 @@ int msm_isp_axi_reset(struct vfe_device *vfe_dev,
 	rc = vfe_dev->hw_info->vfe_ops.core_ops.reset_hw(vfe_dev,
 		0, reset_cmd->blocking);
 
-	msm_isp_get_timestamp(&timestamp);
+	msm_isp_get_timestamp(&timestamp, vfe_dev);
 
 	for (i = 0, j = 0; j < axi_data->num_active_stream &&
 		i < VFE_AXI_SRC_MAX; i++, j++) {
@@ -2837,10 +2829,7 @@ static int msm_isp_start_axi_stream(struct vfe_device *vfe_dev,
 			}
 		}
 	}
-#ifdef CONFIG_HUAWEI_DSM
-	if (rc < 0)
-		camera_report_dsm_err_msm_isp(vfe_dev, DSM_CAMERA_ISP_AXI_STREAM_FAIL, rc, "start_axi_stream");
-#endif
+
 	return rc;
 }
 
@@ -2864,7 +2853,7 @@ static int msm_isp_stop_axi_stream(struct vfe_device *vfe_dev,
 		stream_cfg_cmd->num_streams == 0)
 		return -EINVAL;
 
-	msm_isp_get_timestamp(&timestamp);
+	msm_isp_get_timestamp(&timestamp, vfe_dev);
 
 	for (i = 0; i < stream_cfg_cmd->num_streams; i++) {
 		if (HANDLE_TO_IDX(stream_cfg_cmd->stream_handle[i]) >=
@@ -2948,10 +2937,6 @@ static int msm_isp_stop_axi_stream(struct vfe_device *vfe_dev,
 					pr_err("%s: vfe%d cfg done failed\n",
 						__func__, vfe_dev->pdev->id);
 					stream_info->state = INACTIVE;
-#ifdef CONFIG_HUAWEI_DSM
-					camera_report_dsm_err_msm_isp(vfe_dev, DSM_CAMERA_ISP_AXI_STREAM_FAIL, rc, "stop_axi_stream");
-#endif
-
 				} else
 					pr_err("%s: vfe%d retry success! report err!\n",
 						__func__, vfe_dev->pdev->id);
@@ -3132,7 +3117,7 @@ static int msm_isp_return_empty_buffer(struct vfe_device *vfe_dev,
 		return rc;
 	}
 
-	msm_isp_get_timestamp(&timestamp);
+	msm_isp_get_timestamp(&timestamp, vfe_dev);
 	buf->buf_debug.put_state[buf->buf_debug.put_state_last] =
 		MSM_ISP_BUFFER_STATE_DROP_REG;
 	buf->buf_debug.put_state_last ^= 1;
@@ -3453,7 +3438,7 @@ int msm_isp_update_axi_stream(struct vfe_device *vfe_dev, void *arg)
 			stream_info = &axi_data->stream_info[HANDLE_TO_IDX(
 				update_info->stream_handle)];
 			stream_info->buf_divert = 0;
-			msm_isp_get_timestamp(&timestamp);
+			msm_isp_get_timestamp(&timestamp, vfe_dev);
 			frame_id = vfe_dev->axi_data.src_info[
 				SRC_TO_INTF(stream_info->stream_src)].frame_id;
 			/* set ping pong address to scratch before flush */
@@ -3742,8 +3727,6 @@ void msm_isp_process_axi_irq_stream(struct vfe_device *vfe_dev,
 
 	if (rc < 0) {
 		spin_unlock_irqrestore(&stream_info->lock, flags);
-		pr_err("%s: FATAL error on vfe%d\n", __func__,
-			vfe_dev->pdev->id);
 		/* this usually means a serious scheduling error */
 		msm_isp_halt_send_error(vfe_dev, ISP_EVENT_PING_PONG_MISMATCH);
 		return;
@@ -3849,7 +3832,7 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev,
 		get_comp_mask(irq_status0, irq_status1);
 	wm_mask = vfe_dev->hw_info->vfe_ops.axi_ops.
 		get_wm_mask(irq_status0, irq_status1);
-	if (!(comp_mask || wm_mask) || vfe_dev->ignore_irq)
+	if (!(comp_mask || wm_mask))
 		return;
 
 	ISP_DBG("%s: status: 0x%x\n", __func__, irq_status0);

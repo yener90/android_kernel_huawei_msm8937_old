@@ -18,10 +18,6 @@
 
 /* #define CONFIG_MSM_ISP_DBG 1 */
 
-#ifdef CONFIG_HUAWEI_KERNEL
-extern bool huawei_cam_is_factory_mode(void);
-#endif
-
 #ifdef CONFIG_MSM_ISP_DBG
 #define ISP_DBG(fmt, args...) printk(fmt, ##args)
 #else

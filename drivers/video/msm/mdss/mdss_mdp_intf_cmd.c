@@ -732,6 +732,10 @@ int mdss_mdp_resource_control(struct mdss_mdp_ctl *ctl, u32 sw_event)
 		break;
 	case MDP_RSRC_CTL_EVENT_STOP:
 
+		/* Cancel early wakeup Work Item */
+		if (cancel_work_sync(&ctx->early_wakeup_clk_work))
+			pr_debug("early wakeup work canceled\n");
+
 		/* If we are already OFF, just return */
 		if (mdp5_data->resources_state ==
 				MDP_RSRC_CTL_STATE_OFF) {
@@ -777,10 +781,6 @@ int mdss_mdp_resource_control(struct mdss_mdp_ctl *ctl, u32 sw_event)
 				pr_debug("%s unexpected OFF state\n",
 					__func__);
 		}
-
-		/* Cancel early wakeup Work Item */
-		if (cancel_work_sync(&ctx->early_wakeup_clk_work))
-			pr_debug("early wakeup work canceled\n");
 
 		mutex_lock(&ctl->rsrc_lock);
 		MDSS_XLOG(ctl->num, mdp5_data->resources_state, sw_event, 0x33);
@@ -1899,10 +1899,6 @@ static int mdss_mdp_cmd_wait4pingpong(struct mdss_mdp_ctl *ctl, void *arg)
 				"dsi1_ctrl", "dsi1_phy", "vbif", "vbif_nrt",
 				"dbg_bus", "vbif_dbg_bus", "panic");
 			mdss_fb_report_panel_dead(ctl->mfd);
-#ifdef CONFIG_HUAWEI_DSM
-			/* report pingpong dsm error */
-			lcd_report_dsm_err(DSM_LCD_MDSS_PINGPONG_ERROR_NO,rc,0);
-#endif
 		}
 		ctx->pp_timeout_report_cnt++;
 		rc = -EPERM;
@@ -2839,6 +2835,7 @@ static int mdss_mdp_cmd_intfs_stop(struct mdss_mdp_ctl *ctl, int session,
 		pr_err("invalid ctx session: %d\n", session);
 		return -ENODEV;
 	}
+
 	mdss_mdp_cmd_ctx_stop(ctl, ctx, panel_power_state);
 
 	if (is_pingpong_split(ctl->mfd)) {

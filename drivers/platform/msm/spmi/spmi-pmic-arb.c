@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -981,8 +981,6 @@ __pmic_arb_periph_irq(int irq, void *dev_id, bool show)
 		irq_none_cnt++;
 		/* for irq_none, report dmd abnormal irq issue every 99900 */
 		if (irq_none_cnt >= 99900) {
-			dsm_post_chg_bms_info(DSM_CHG_SPMI_INT_ERR,
-						"spmi irq none storm\n");
 			irq_none_cnt = 0;
 		}
 		irq_none_cnt++;

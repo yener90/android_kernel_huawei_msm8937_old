@@ -60,7 +60,6 @@ do{			\
 
 #define FBPIXMAPSIZE	(1024 * 8)
 
-
 static DEFINE_MUTEX(registration_lock);
 
 struct fb_info *registered_fb[FB_MAX] __read_mostly;
@@ -1073,7 +1072,7 @@ EXPORT_SYMBOL(fb_set_var);
 
 int
 fb_blank(struct fb_info *info, int blank)
-{
+{	
 	struct fb_event event;
 	int ret = -EINVAL, early_ret;
 #ifdef CONFIG_HUAWEI_KERNEL_LCD

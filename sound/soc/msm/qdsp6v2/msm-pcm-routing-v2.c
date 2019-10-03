@@ -66,7 +66,7 @@ static int quin_mi2s_switch_enable;
 static int fm_pcmrx_switch_enable;
 static int lsm_mux_slim_port;
 static int slim0_rx_aanc_fb_port;
-static int msm_route_ec_ref_rx; /* NONE */
+static int msm_route_ec_ref_rx;
 static uint32_t voc_session_id = ALL_SESSION_VSID;
 static int msm_route_ext_ec_ref;
 static bool is_custom_stereo_on;
@@ -2152,7 +2152,6 @@ static const char * const ext_ec_ref_rx[] = {"NONE", "PRI_MI2S_TX",
 
 static const struct soc_enum msm_route_ext_ec_ref_rx_enum[] = {
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(ext_ec_ref_rx), ext_ec_ref_rx),
-
 };
 
 static const struct snd_kcontrol_new voc_ext_ec_mux =

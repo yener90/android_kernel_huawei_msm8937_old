@@ -69,10 +69,6 @@ static void tool_set_proc_name(char *procname)
 	char month[4] = {0};
 	int i = 0, n_month = 1, n_day = 0, n_year = 0, ret;
 
-	snprintf(date, 20, "%s", __DATE__);
-
-	/* pr_debug("compile date: %s", date); */
-
 	ret = sscanf(date, "%s %d %d", month, &n_day, &n_year);
 	if (!ret)
 		return;

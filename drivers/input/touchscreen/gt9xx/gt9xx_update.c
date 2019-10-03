@@ -389,7 +389,7 @@ s32 gup_enter_update_mode(struct i2c_client *client)
 
 	/* step1:RST output low last at least 2ms */
 	gpio_direction_output(ts->pdata->reset_gpio, 0);
-	usleep(20000);
+	msleep(20);
 
 	/* step2:select I2C slave addr,INT:0--0xBA;1--0x28. */
 	gpio_direction_output(ts->pdata->irq_gpio,

@@ -123,6 +123,9 @@ void mdss_check_dsi_ctrl_status(struct work_struct *work, uint32_t interval)
 	 * to acquire ov_lock in case of video mode. Removing this
 	 * lock to fix issues so that ESD thread would not block other
 	 * overlay operations. Need refine this lock for command mode
+	 *
+	 * If Burst mode is enabled then we dont have to acquire ov_lock as
+	 * command and data arbitration is possible in h/w
 	 */
 
 	if (mipi->mode == DSI_CMD_MODE)

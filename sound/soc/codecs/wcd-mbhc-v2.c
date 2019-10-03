@@ -66,8 +66,6 @@ static int det_extn_cable_en;
 module_param(det_extn_cable_en, int,
 		S_IRUGO | S_IWUSR | S_IWGRP);
 MODULE_PARM_DESC(det_extn_cable_en, "enable/disable extn cable detect");
-static unsigned long timeout_jiffies = 0;
-static bool ispress = false;
 struct hph_btn {
 	bool hph_insert_status;
 	bool btn_press_first;
@@ -599,20 +597,6 @@ static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 				enum snd_jack_types jack_type)
 {
 	WCD_MBHC_RSC_ASSERT_LOCKED(mbhc);
-	if (insertion) {
-		/*timeout after 500ms*/
-		timeout_jiffies = jiffies + msecs_to_jiffies(DSM_AUDIO_LESS_HS_GAP);
-	} else {
-		if (time_before(jiffies, timeout_jiffies)) {
-			if (ispress)
-				audio_dsm_report_num(DSM_AUDIO_HANDSET_PRESS_RELEASE_ERROR,
-							DSM_AUDIO_MESG_PRESS_RELEASE_ERROR);
-			else
-				audio_dsm_report_num(DSM_AUDIO_HANDSET_PLUG_RELEASE_ERROR,
-							DSM_AUDIO_MESG_INSURT_TIME_SHORT);
-		}
-	}
-	ispress = false;
 
 	pr_debug("%s: enter insertion %d hph_status %x\n",
 		 __func__, insertion, mbhc->hph_status);
@@ -1442,10 +1426,6 @@ report:
 		pr_debug("%s: Switch level is low\n", __func__);
 		goto exit;
 	}
-	if (MBHC_PLUG_TYPE_INVALID == plug_type) {
-		audio_dsm_report_num(DSM_AUDIO_HANDSET_DECT_FAIL_ERROR_NO,
-							DSM_AUDIO_MESG_HS_TYPE_DECT_FAIL);
-	}
 	if (plug_type == MBHC_PLUG_TYPE_GND_MIC_SWAP && mbhc->btn_press_intr) {
 		pr_debug("%s: insertion of headphone with swap\n", __func__);
 		wcd_cancel_btn_work(mbhc);
@@ -2148,15 +2128,6 @@ static irqreturn_t wcd_mbhc_btn_press_handler(int irq, void *data)
 		goto done;
 	}
 	mbhc->btn_press_intr = true;
-	if (time_before(jiffies, timeout_jiffies)) {
-		if (!ispress) {
-			audio_dsm_report_num(DSM_AUDIO_HANDSET_PLUG_PRESS_ERROR,
-								DSM_AUDIO_MESG_PLUG_PRESS_ERROR);
-		}
-	} else {
-		timeout_jiffies = jiffies + msecs_to_jiffies(DSM_AUDIO_LESS_HS_GAP);
-		ispress = true;
-	}
 
 	msec_val = jiffies_to_msecs(jiffies - mbhc->jiffies_atreport);
 	pr_debug("%s: msec_val = %ld\n", __func__, msec_val);

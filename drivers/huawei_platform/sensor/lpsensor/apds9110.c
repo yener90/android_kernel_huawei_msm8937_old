@@ -156,7 +156,6 @@ static unsigned char psGainValueArray[32]={0x0F, 0x0E, 0x0D, 0x0C, 0x0B, 0x0A, 0
                                            0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x10};
 /* Proximity sensor use this work queue to report data */
 static struct workqueue_struct *apds9110_workqueue = NULL;
-extern bool power_key_ps ;    //the value is true means powerkey is pressed, false means not pressed
 
 
 
@@ -638,11 +637,6 @@ static int apds9110_enable_ps_sensor(struct i2c_client *client,unsigned int val)
 			APDS9110_ERR("%s,line %d:read power_value failed,open ps fail\n",__func__,__LINE__);
 			return ret;
 		}
-#ifdef CONFIG_HUAWEI_DSM
-		apds_dsm_no_irq_check(data);
-#endif
-
-		power_key_ps = false;
 		schedule_delayed_work(&data->powerkey_work, msecs_to_jiffies(100));
 	} else {
 
@@ -1197,13 +1191,8 @@ static int sensor_parse_dt(struct device *dev,
 static void apds9110_powerkey_screen_handler(struct work_struct *work)
 {
 	struct apds9110_data *data = container_of((struct delayed_work *)work, struct apds9110_data, powerkey_work);
-	if(power_key_ps)
-	{
-		APDS9110_INFO("%s : power_key_ps (%d) press\n",__func__, power_key_ps);
-		power_key_ps=false;
 		input_report_abs(data->input_dev_ps, ABS_DISTANCE, APDS9110_FAR_FLAG);
 		input_sync(data->input_dev_ps);
-	}
 		schedule_delayed_work(&data->powerkey_work, msecs_to_jiffies(500));
 }
 

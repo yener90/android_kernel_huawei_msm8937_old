@@ -70,8 +70,6 @@
 #define TXC_PA2240_I2C_WORD 1
 /*keep 400ms wakeup after the ps report the far or near state*/
 #define PS_WAKEUP_TIME 700
-/*pls parameters,it is still different for every devices*/
-extern bool power_key_ps ;    //the value is true means powerkey is pressed, false means not pressed
 /*dynamic debug mask to control log print,you can echo value to txc_pa2240_debug to control*/
 static int txc_pa2240_debug_mask= 1;
 module_param_named(txc_pa2240_debug, txc_pa2240_debug_mask, int, S_IRUGO | S_IWUSR | S_IWGRP);
@@ -1515,11 +1513,6 @@ static int txc_pa2240_enable_ps_sensor(struct i2c_client *client,unsigned int va
 			TXC_PA2240_ERR("%s,line %d:read power_value failed,open ps fail\n",__func__,__LINE__);
 			return ret;
 		}
-#ifdef CONFIG_HUAWEI_DSM
-        txc_pa2240_dsm_no_irq_check(data);
-#endif
-
-		power_key_ps = false;
 		schedule_delayed_work(&data->powerkey_work, msecs_to_jiffies(100));
 	} else {
 
@@ -2347,13 +2340,8 @@ static int sensor_parse_dt(struct device *dev,
 static void txc_pa2240_powerkey_screen_handler(struct work_struct *work)
 {
 	struct txc_pa2240_data *data = container_of((struct delayed_work *)work, struct txc_pa2240_data, powerkey_work);
-	if(power_key_ps)
-	{
-		TXC_PA2240_INFO("%s : power_key_ps (%d) press\n",__func__, power_key_ps);
-		power_key_ps=false;
 		input_report_abs(data->input_dev_ps, ABS_DISTANCE, TXC_PA2240_FAR_FLAG);
 		input_sync(data->input_dev_ps);
-	}
 	schedule_delayed_work(&data->powerkey_work, msecs_to_jiffies(500));
 }
 
